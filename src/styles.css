@@ -1,7 +1,8 @@
 /*
- * Defaults to dark: WebKitGTK (Linux) doesn't reliably report the desktop's
- * dark preference through prefers-color-scheme, so light is the opt-in case
- * (via the media query below) rather than the default.
+ * Always dark: WebKitGTK (Linux) can report prefers-color-scheme as light
+ * even on a visually dark desktop, so a media query isn't a reliable signal
+ * here. This chrome is a thin wrapper, not something that needs to track an
+ * arbitrary OS theme precisely.
  */
 :root {
   --bg: #1e1f22;
@@ -13,20 +14,6 @@
   --accent: #6c9bff;
   --accent-hover: #8bb0ff;
   --danger: #ff6b6b;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f6f7;
-    --surface: #ffffff;
-    --sidebar-bg: #eceef1;
-    --border: #d9dce1;
-    --text: #1a1c1f;
-    --text-muted: #6b7280;
-    --accent: #396cd8;
-    --accent-hover: #2f5bb8;
-    --danger: #d83939;
-  }
 }
 
 * {

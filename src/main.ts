@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   activateTab,
   addInstallation,
@@ -24,21 +25,35 @@ function $(id: string): HTMLElement {
   return el;
 }
 
-function getContentBounds(): Bounds {
-  const rect = $("content-area").getBoundingClientRect();
-  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+// Must match `.sidebar { width: ... }` in styles.css.
+const SIDEBAR_WIDTH = 260;
+
+// Bounds are computed from the OS window's own size rather than measured via
+// getBoundingClientRect(): once the chrome webview is pinned to the sidebar
+// strip (see syncChromeLayout below), its own viewport IS just that strip, so
+// reading #content-area's layout from inside it would only ever return a
+// squashed, meaningless rect.
+async function computeLayoutBounds(): Promise<{ sidebar: Bounds; content: Bounds }> {
+  const win = getCurrentWindow();
+  const scaleFactor = await win.scaleFactor();
+  const size = (await win.innerSize()).toLogical(scaleFactor);
+  const contentWidth = Math.max(size.width - SIDEBAR_WIDTH, 0);
+  return {
+    sidebar: { x: 0, y: 0, width: SIDEBAR_WIDTH, height: size.height },
+    content: { x: SIDEBAR_WIDTH, y: 0, width: contentWidth, height: size.height },
+  };
 }
 
-function getSidebarBounds(): Bounds {
-  const rect = $("sidebar").getBoundingClientRect();
-  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+async function getContentBounds(): Promise<Bounds> {
+  return (await computeLayoutBounds()).content;
 }
 
 // Keeps the chrome (main) webview pinned to the sidebar strip only, so it never
 // overlaps the child webview that renders the active tab's content.
 async function syncChromeLayout() {
   if ($("shell").classList.contains("hidden")) return;
-  await syncLayout(getSidebarBounds(), getContentBounds());
+  const { sidebar, content } = await computeLayoutBounds();
+  await syncLayout(sidebar, content);
 }
 
 let resizeScheduled = false;
@@ -94,7 +109,7 @@ function collectWithDescendants(tabId: string): Set<string> {
 }
 
 async function switchToTab(tabId: string) {
-  const bounds = getContentBounds();
+  const bounds = await getContentBounds();
   await activateTab(tabId, bounds);
   activeTabId = tabId;
   hideEmptyState();
@@ -120,7 +135,7 @@ async function requestOpenTab(
     return;
   }
 
-  const bounds = getContentBounds();
+  const bounds = await getContentBounds();
   const tab = await openTab(installationId, kind, parentId, bounds, url);
   tabs.push(tab);
   await switchToTab(tab.id);
