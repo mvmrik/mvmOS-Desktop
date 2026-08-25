@@ -1,0 +1,358 @@
+:root {
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --sidebar-bg: #eceef1;
+  --border: #d9dce1;
+  --text: #1a1c1f;
+  --text-muted: #6b7280;
+  --accent: #396cd8;
+  --accent-hover: #2f5bb8;
+  --danger: #d83939;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1f22;
+    --surface: #26282c;
+    --sidebar-bg: #202124;
+    --border: #35373b;
+    --text: #f1f1f2;
+    --text-muted: #9aa0a6;
+    --accent: #6c9bff;
+    --accent-hover: #8bb0ff;
+    --danger: #ff6b6b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background-color: var(--bg);
+}
+
+.hidden {
+  display: none !important;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* Onboarding */
+
+.onboarding {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.onboarding-card {
+  width: 380px;
+  padding: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.onboarding-card h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin: 0 0 20px;
+}
+
+/* Forms */
+
+.installation-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.installation-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.installation-form input {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.installation-form button[type="submit"] {
+  margin-top: 4px;
+  padding: 9px 14px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.installation-form button[type="submit"]:hover {
+  background: var(--accent-hover);
+}
+
+.form-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Shell layout */
+
+.shell {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 10px;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.icon-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.icon-btn.subtle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  visibility: hidden;
+}
+
+.installation-header:hover .icon-btn.subtle,
+.tab-row:hover .icon-btn.subtle {
+  visibility: visible;
+}
+
+.icon-btn.subtle:hover {
+  color: var(--danger);
+}
+
+.installation-list {
+  flex: 1;
+  padding: 4px 0 12px;
+}
+
+.installation-block {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.installation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 6px;
+}
+
+.installation-name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installation-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 4px 4px;
+}
+
+.installation-action-btn {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.installation-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tab-tree {
+  margin-top: 4px;
+}
+
+.tab-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px 5px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.tab-row:hover {
+  background: var(--surface);
+}
+
+.tab-row.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.tab-row.active .icon-btn.subtle {
+  color: #fff;
+}
+
+.tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content-area {
+  position: relative;
+  flex: 1;
+  background: var(--bg);
+}
+
+.empty-state,
+.offline-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px;
+}
+
+.offline-panel button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.offline-panel button:hover {
+  background: var(--accent-hover);
+}
+
+/* Modal */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal-card {
+  width: 340px;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.modal-card h2 {
+  margin: 0 0 16px;
+  font-size: 17px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.modal-actions button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.modal-actions button[type="submit"] {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+}
+
+.modal-actions button[type="submit"]:hover {
+  background: var(--accent-hover);
+}
+
+.modal-actions button.secondary {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
