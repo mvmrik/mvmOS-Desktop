@@ -1,21 +1,71 @@
 {
   "name": "mvmos-desktop",
+  "productName": "mvmOS Desktop",
+  "version": "0.2.0",
+  "description": "Desktop client for managing and using your mvmOS installations.",
+  "homepage": "https://mvmos.org",
+  "desktopName": "mvmos-desktop.desktop",
+  "author": "mvmrik",
+  "license": "MIT",
   "private": true,
-  "version": "0.1.0",
-  "type": "module",
+  "main": "main/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
   },
-  "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+  "build": {
+    "appId": "com.mvmrik.mvmosdesktop",
+    "productName": "mvmOS Desktop",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "main/**/*",
+      "renderer/**/*",
+      "build/icon.*",
+      "package.json"
+    ],
+    "linux": {
+      "executableName": "mvmos-desktop",
+      "syncDesktopName": true,
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Network",
+      "icon": "build/icon.png",
+      "maintainer": "mvmrik"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "identity": null
+    }
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "vite": "^6.0.3",
-    "typescript": "~5.6.2"
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

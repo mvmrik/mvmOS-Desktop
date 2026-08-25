@@ -1,8 +1,6 @@
 /*
- * Always dark: WebKitGTK (Linux) can report prefers-color-scheme as light
- * even on a visually dark desktop, so a media query isn't a reliable signal
- * here. This chrome is a thin wrapper, not something that needs to track an
- * arbitrary OS theme precisely.
+ * Always dark. This chrome is a thin wrapper around the installations' own
+ * pages, so it keeps one deliberate palette instead of following the OS theme.
  */
 :root {
   --bg: #1e1f22;
@@ -14,6 +12,7 @@
   --accent: #6c9bff;
   --accent-hover: #8bb0ff;
   --danger: #ff6b6b;
+  --sidebar-width: 260px;
 }
 
 * {
@@ -97,6 +96,11 @@ button {
   font-size: 14px;
 }
 
+.installation-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .installation-form button[type="submit"] {
   margin-top: 4px;
   padding: 9px 14px;
@@ -124,12 +128,9 @@ button {
   height: 100vh;
 }
 
-/*
- * The chrome webview is sized to the sidebar strip by the host (GTK on Linux,
- * webview bounds elsewhere), so the sidebar simply fills its own viewport.
- */
 .sidebar {
-  width: 100%;
+  width: var(--sidebar-width);
+  flex-shrink: 0;
   height: 100%;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
@@ -138,37 +139,71 @@ button {
   overflow: hidden;
 }
 
-.sidebar.collapsed > *:not(.sidebar-toggle) {
+/* Hidden means gone: no strip, no handle - it comes back from the menu,
+   Ctrl/Cmd+B, or the right-click menu anywhere in the window. */
+.shell.sidebar-hidden .sidebar {
   display: none;
-}
-
-.sidebar-toggle {
-  flex-shrink: 0;
-  border: none;
-  border-top: 1px solid var(--border);
-  background: var(--sidebar-bg);
-  color: var(--text-muted);
-  padding: 10px 0;
-  font-size: 13px;
-  line-height: 1;
-}
-
-.sidebar-toggle:hover {
-  color: var(--text);
-  background: var(--surface);
 }
 
 .sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 14px 14px 10px;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .brand {
   font-weight: 700;
   font-size: 14px;
 }
+
+.content-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--bg);
+}
+
+.status-card {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.status-card p {
+  margin: 0;
+}
+
+.status-card button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.status-card button:hover {
+  background: var(--accent-hover);
+}
+
+/* Buttons */
 
 .icon-btn {
   width: 22px;
@@ -182,6 +217,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
 }
 
 .icon-btn:hover {
@@ -190,9 +226,12 @@ button {
 }
 
 .icon-btn.subtle {
+  width: 20px;
+  height: 20px;
   border: none;
   background: transparent;
   color: var(--text-muted);
+  font-size: 12px;
   visibility: hidden;
 }
 
@@ -202,8 +241,23 @@ button {
 }
 
 .icon-btn.subtle:hover {
+  color: var(--text);
+}
+
+.icon-btn.subtle.remove:hover {
   color: var(--danger);
 }
+
+.icon-btn.subtle:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.icon-btn.subtle:disabled:hover {
+  color: var(--text-muted);
+}
+
+/* Installations */
 
 .installation-list {
   flex: 1;
@@ -217,16 +271,31 @@ button {
   border-bottom: 1px solid var(--border);
 }
 
+.installation-block.dragging {
+  opacity: 0.4;
+}
+
+/* Where the dragged installation would land. */
+.installation-block.drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+.installation-block.drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
 .installation-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 2px;
   padding: 4px 4px 6px;
   cursor: pointer;
   user-select: none;
 }
 
 .installation-name {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
   font-size: 13px;
   overflow: hidden;
@@ -259,6 +328,8 @@ button {
   color: var(--accent);
 }
 
+/* Tabs */
+
 .tab-tree {
   margin-top: 4px;
 }
@@ -267,6 +338,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   padding: 5px 8px 5px 12px;
   border-radius: 6px;
   font-size: 12.5px;
@@ -314,43 +386,12 @@ button {
   color: var(--accent);
 }
 
-.status-panel {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-  padding: 12px 14px 14px;
-  border-top: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-.status-panel p {
-  margin: 0;
-}
-
-.status-panel button {
-  padding: 7px 14px;
-  border-radius: 6px;
-  border: none;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  font-size: 12.5px;
-}
-
-.status-panel button:hover {
-  background: var(--accent-hover);
-}
-
-/* Modal */
+/* Modals */
 
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -358,7 +399,7 @@ button {
 }
 
 .modal-card {
-  width: 340px;
+  width: 360px;
   padding: 24px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -368,6 +409,13 @@ button {
 .modal-card h2 {
   margin: 0 0 16px;
   font-size: 17px;
+}
+
+.confirm-message {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
 }
 
 .modal-actions {
@@ -382,10 +430,10 @@ button {
   border-radius: 6px;
   font-size: 13px;
   font-weight: 600;
+  border: none;
 }
 
 .modal-actions button[type="submit"] {
-  border: none;
   background: var(--accent);
   color: #fff;
 }
@@ -398,4 +446,18 @@ button {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text);
+}
+
+.modal-actions button.secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.modal-actions button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.modal-actions button.danger:hover {
+  filter: brightness(1.1);
 }
