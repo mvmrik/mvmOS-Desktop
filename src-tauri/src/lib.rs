@@ -212,7 +212,7 @@ fn open_tab(
     let target_url = match url {
         Some(u) => u,
         None => {
-            let path = if kind == "apphub" { "/pub/apphub" } else { "" };
+            let path = if kind == "apphub" { "/pub/apphub/" } else { "" };
             format!("{}{}", installation.address, path)
         }
     };
@@ -308,15 +308,22 @@ fn activate_tab(state: State<AppState>, tab_id: String, bounds: BoundsInput) -> 
     Ok(())
 }
 
+/// Pins the main chrome webview to the sidebar strip only, so it can never overlap
+/// (and fight for stacking order with) the child webviews layered into the content area.
 #[tauri::command]
-fn resize_active(state: State<AppState>, bounds: BoundsInput) -> Result<(), String> {
+fn sync_layout(app: AppHandle, state: State<AppState>, sidebar: BoundsInput, content: BoundsInput) -> Result<(), String> {
+    let main_webview = app.get_webview("main").ok_or("main webview missing")?;
+    main_webview
+        .set_bounds(bounds_to_rect(&sidebar))
+        .map_err(|e| e.to_string())?;
+
     let active = state.active_tab.lock().unwrap();
     if let Some(id) = active.as_ref() {
         let tabs = state.tabs.lock().unwrap();
         if let Some(entry) = tabs.get(id) {
             entry
                 .webview
-                .set_bounds(bounds_to_rect(&bounds))
+                .set_bounds(bounds_to_rect(&content))
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -379,7 +386,7 @@ pub fn run() {
             list_tabs,
             open_tab,
             activate_tab,
-            resize_active,
+            sync_layout,
             close_tab,
         ])
         .run(tauri::generate_context!())

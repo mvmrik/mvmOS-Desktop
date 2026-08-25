@@ -7,7 +7,7 @@ import {
   getInstallations,
   openTab,
   removeInstallation,
-  resizeActive,
+  syncLayout,
 } from "./api";
 import type { Bounds, Installation, TabInfo, TabKind } from "./types";
 
@@ -29,15 +29,25 @@ function getContentBounds(): Bounds {
   return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
 }
 
+function getSidebarBounds(): Bounds {
+  const rect = $("sidebar").getBoundingClientRect();
+  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+}
+
+// Keeps the chrome (main) webview pinned to the sidebar strip only, so it never
+// overlaps the child webview that renders the active tab's content.
+async function syncChromeLayout() {
+  if ($("shell").classList.contains("hidden")) return;
+  await syncLayout(getSidebarBounds(), getContentBounds());
+}
+
 let resizeScheduled = false;
 function scheduleResize() {
   if (resizeScheduled) return;
   resizeScheduled = true;
   requestAnimationFrame(async () => {
     resizeScheduled = false;
-    if (activeTabId) {
-      await resizeActive(getContentBounds());
-    }
+    await syncChromeLayout();
   });
 }
 

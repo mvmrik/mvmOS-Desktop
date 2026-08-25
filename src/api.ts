@@ -31,8 +31,8 @@ export function activateTab(tabId: string, bounds: Bounds): Promise<void> {
   return invoke("activate_tab", { tabId, bounds });
 }
 
-export function resizeActive(bounds: Bounds): Promise<void> {
-  return invoke("resize_active", { bounds });
+export function syncLayout(sidebar: Bounds, content: Bounds): Promise<void> {
+  return invoke("sync_layout", { sidebar, content });
 }
 
 export function closeTab(tabId: string): Promise<void> {
