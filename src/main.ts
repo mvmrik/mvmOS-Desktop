@@ -28,6 +28,13 @@ function $(id: string): HTMLElement {
 // The width the sidebar strip is asked for. The sidebar itself is `width: 100%`
 // of the chrome webview, so this is the only place the number lives.
 const SIDEBAR_WIDTH = 260;
+// Just wide enough for the toggle arrow when the sidebar is collapsed.
+const SIDEBAR_COLLAPSED_WIDTH = 32;
+
+let sidebarCollapsed = false;
+// Which installations currently have their action buttons revealed - kept
+// outside the render loop since renderSidebar() rebuilds the DOM from scratch.
+const revealedActions = new Set<string>();
 
 // Bounds are computed from the OS window's own size rather than measured via
 // getBoundingClientRect(): the chrome webview's own viewport IS just the
@@ -43,7 +50,11 @@ async function computeLayoutBounds(): Promise<{
   // While onboarding is up there are no tabs and the card is wider than the
   // strip, so the chrome takes the whole window instead.
   const chromeFull = $("shell").classList.contains("hidden");
-  const sidebarWidth = chromeFull ? size.width : SIDEBAR_WIDTH;
+  const sidebarWidth = chromeFull
+    ? size.width
+    : sidebarCollapsed
+      ? SIDEBAR_COLLAPSED_WIDTH
+      : SIDEBAR_WIDTH;
   return {
     sidebar: { x: 0, y: 0, width: sidebarWidth, height: size.height },
     content: {
@@ -64,6 +75,15 @@ async function getContentBounds(): Promise<Bounds> {
 async function syncChromeLayout() {
   const { sidebar, content, chromeFull } = await computeLayoutBounds();
   await syncLayout(sidebar, content, chromeFull);
+}
+
+function setSidebarCollapsed(collapsed: boolean) {
+  sidebarCollapsed = collapsed;
+  $("sidebar").classList.toggle("collapsed", collapsed);
+  const toggleBtn = $("sidebar-toggle-btn") as HTMLButtonElement;
+  toggleBtn.textContent = collapsed ? "›" : "‹";
+  toggleBtn.title = collapsed ? "Show sidebar" : "Hide sidebar";
+  scheduleResize();
 }
 
 let resizeScheduled = false;
@@ -195,6 +215,15 @@ function makeActionButton(label: string, onClick: () => void): HTMLButtonElement
   return btn;
 }
 
+// A page can flag an unread count in its own <title>, e.g. "(5) Inbox" - that
+// count is shown as a badge instead of as part of the label text.
+function parseBadge(title: string): { label: string; badge: number | null } {
+  const match = title.match(/\((\d+)\)/);
+  if (!match || match.index === undefined) return { label: title, badge: null };
+  const label = (title.slice(0, match.index) + title.slice(match.index + match[0].length)).trim();
+  return { label: label || title, badge: parseInt(match[1], 10) };
+}
+
 function renderTabRow(tab: TabInfo, depth: number): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = "tab-row-wrapper";
@@ -203,11 +232,20 @@ function renderTabRow(tab: TabInfo, depth: number): HTMLElement {
   row.className = "tab-row" + (tab.id === activeTabId ? " active" : "");
   row.style.paddingLeft = `${12 + depth * 16}px`;
 
+  const { label: labelText, badge } = parseBadge(tab.title);
+
   const label = document.createElement("span");
   label.className = "tab-label";
-  label.textContent = tab.title;
+  label.textContent = labelText;
   label.addEventListener("click", () => switchToTab(tab.id));
   row.appendChild(label);
+
+  if (badge !== null && badge > 0) {
+    const badgeEl = document.createElement("span");
+    badgeEl.className = "tab-badge";
+    badgeEl.textContent = String(badge);
+    row.appendChild(badgeEl);
+  }
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "icon-btn subtle tab-close";
@@ -244,15 +282,46 @@ function renderInstallationBlock(installation: Installation): HTMLElement {
   removeBtn.className = "icon-btn subtle";
   removeBtn.textContent = "×";
   removeBtn.title = "Remove installation";
-  removeBtn.addEventListener("click", () => handleRemoveInstallation(installation.id));
+  removeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    handleRemoveInstallation(installation.id);
+  });
   header.appendChild(removeBtn);
+
+  if (revealedActions.has(installation.id)) {
+    block.classList.add("actions-visible");
+  }
+  header.addEventListener("click", () => {
+    const revealed = revealedActions.has(installation.id);
+    if (revealed) {
+      revealedActions.delete(installation.id);
+    } else {
+      revealedActions.add(installation.id);
+    }
+    block.classList.toggle("actions-visible", !revealed);
+  });
 
   block.appendChild(header);
 
+  const hideActions = () => {
+    revealedActions.delete(installation.id);
+    block.classList.remove("actions-visible");
+  };
+
   const actions = document.createElement("div");
   actions.className = "installation-actions";
-  actions.appendChild(makeActionButton("Desktop", () => openOrSwitch(installation.id, "desktop")));
-  actions.appendChild(makeActionButton("Apps Hub", () => openOrSwitch(installation.id, "apphub")));
+  actions.appendChild(
+    makeActionButton("mvmOS Desktop", () => {
+      hideActions();
+      openOrSwitch(installation.id, "desktop");
+    }),
+  );
+  actions.appendChild(
+    makeActionButton("mvmOS Public", () => {
+      hideActions();
+      openOrSwitch(installation.id, "apphub");
+    }),
+  );
   block.appendChild(actions);
 
   const topLevelTabs = tabs.filter((t) => t.installationId === installation.id && !t.parentId);
@@ -298,8 +367,12 @@ async function submitAddInstallation(
   name: string,
   address: string,
   errorEl: HTMLElement,
+  submitBtn: HTMLButtonElement,
 ): Promise<Installation | null> {
   errorEl.classList.add("hidden");
+  const originalLabel = submitBtn.textContent;
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Checking…";
   try {
     const installation = await addInstallation(name, address);
     installations.push(installation);
@@ -309,6 +382,9 @@ async function submitAddInstallation(
     errorEl.textContent = String(e);
     errorEl.classList.remove("hidden");
     return null;
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = originalLabel;
   }
 }
 
@@ -319,7 +395,8 @@ function wireStaticHandlers() {
     e.preventDefault();
     const name = (document.getElementById("onboarding-name") as HTMLInputElement).value;
     const address = (document.getElementById("onboarding-address") as HTMLInputElement).value;
-    await submitAddInstallation(name, address, $("onboarding-error"));
+    const submitBtn = (e.target as HTMLFormElement).querySelector('button[type="submit"]') as HTMLButtonElement;
+    await submitAddInstallation(name, address, $("onboarding-error"), submitBtn);
   });
 
   $("add-installation-btn").addEventListener("click", () => {
@@ -334,7 +411,8 @@ function wireStaticHandlers() {
     e.preventDefault();
     const nameInput = document.getElementById("modal-name") as HTMLInputElement;
     const addressInput = document.getElementById("modal-address") as HTMLInputElement;
-    const installation = await submitAddInstallation(nameInput.value, addressInput.value, $("modal-error"));
+    const submitBtn = (e.target as HTMLFormElement).querySelector('button[type="submit"]') as HTMLButtonElement;
+    const installation = await submitAddInstallation(nameInput.value, addressInput.value, $("modal-error"), submitBtn);
     if (installation) {
       $("add-installation-modal").classList.add("hidden");
       nameInput.value = "";
@@ -344,12 +422,22 @@ function wireStaticHandlers() {
 
   window.addEventListener("resize", scheduleResize);
 
+  $("sidebar-toggle-btn").addEventListener("click", () => setSidebarCollapsed(!sidebarCollapsed));
+
   listen<{ parentId: string; url: string }>("mvmos://new-child-tab", async (event) => {
     const { parentId, url } = event.payload;
     const parent = tabs.find((t) => t.id === parentId);
     if (!parent) return;
     const kind: TabKind = url.includes("/pub/apphub") ? "apphub" : "desktop";
     await requestOpenTab(parent.installationId, kind, parentId, url);
+  });
+
+  listen<{ tabId: string; title: string }>("mvmos://tab-title", (event) => {
+    const { tabId, title } = event.payload;
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab || !title) return;
+    tab.title = title;
+    renderSidebar();
   });
 }
 

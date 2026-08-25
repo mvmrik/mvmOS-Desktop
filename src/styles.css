@@ -138,6 +138,26 @@ button {
   overflow: hidden;
 }
 
+.sidebar.collapsed > *:not(.sidebar-toggle) {
+  display: none;
+}
+
+.sidebar-toggle {
+  flex-shrink: 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  color: var(--text-muted);
+  padding: 10px 0;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.sidebar-toggle:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -202,6 +222,8 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 4px 4px 6px;
+  cursor: pointer;
+  user-select: none;
 }
 
 .installation-name {
@@ -213,9 +235,13 @@ button {
 }
 
 .installation-actions {
-  display: flex;
+  display: none;
   gap: 6px;
   padding: 0 4px 4px;
+}
+
+.installation-block.actions-visible .installation-actions {
+  display: flex;
 }
 
 .installation-action-btn {
@@ -265,6 +291,27 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+
+.tab-badge {
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.tab-row.active .tab-badge {
+  background: #fff;
+  color: var(--accent);
 }
 
 .status-panel {

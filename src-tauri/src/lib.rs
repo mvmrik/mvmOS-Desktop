@@ -175,6 +175,13 @@ struct NewChildTabRequest {
     url: String,
 }
 
+#[derive(Clone, Serialize)]
+struct TabTitleChanged {
+    #[serde(rename = "tabId")]
+    tab_id: String,
+    title: String,
+}
+
 fn bounds_to_rect(bounds: &BoundsInput) -> Rect {
     Rect {
         position: Position::Logical(LogicalPosition::new(bounds.x, bounds.y)),
@@ -244,14 +251,31 @@ fn get_installations(state: State<AppState>) -> Vec<Installation> {
     state.installations.lock().unwrap().clone()
 }
 
+async fn is_reachable(address: &str) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    client.get(address).send().await.is_ok()
+}
+
 #[tauri::command]
-fn add_installation(
+async fn add_installation(
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     name: String,
     address: String,
 ) -> Result<Installation, String> {
     let normalized = normalize_address(&address)?;
+    if !is_reachable(&normalized).await {
+        return Err(format!(
+            "Could not reach \"{}\". Check the address and make sure the server is running.",
+            normalized
+        ));
+    }
     let display_name = if name.trim().is_empty() {
         normalized.clone()
     } else {
@@ -288,14 +312,7 @@ fn remove_installation(app: AppHandle, state: State<AppState>, id: String) -> Re
 
 #[tauri::command]
 async fn check_reachable(address: String) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    client.get(&address).send().await.is_ok()
+    is_reachable(&address).await
 }
 
 #[tauri::command]
@@ -350,6 +367,9 @@ fn open_tab(
     let new_window_app = app.clone();
     let new_window_tab_id = tab_id.clone();
 
+    let title_app = app.clone();
+    let title_tab_id = tab_id.clone();
+
     let webview_builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(parsed_url))
         .on_navigation(move |nav_url| {
             if origin_of(nav_url) == nav_origin {
@@ -373,6 +393,19 @@ fn open_tab(
                 let _ = tauri_plugin_opener::open_url(nav_url.to_string(), None::<&str>);
             }
             NewWindowResponse::Deny
+        })
+        .on_document_title_changed(move |_webview, title| {
+            let state: State<AppState> = title_app.state();
+            if let Some(entry) = state.tabs.lock().unwrap().get_mut(&title_tab_id) {
+                entry.info.title = title.clone();
+            }
+            let _ = title_app.emit(
+                "mvmos://tab-title",
+                TabTitleChanged {
+                    tab_id: title_tab_id.clone(),
+                    title,
+                },
+            );
         });
 
     let rect = bounds_to_rect(&bounds);
@@ -382,7 +415,7 @@ fn open_tab(
     let _ = webview.hide();
 
     let title = match kind.as_str() {
-        "apphub" => format!("{} — Apps Hub", installation.name),
+        "apphub" => format!("{} — Public", installation.name),
         _ => installation.name.clone(),
     };
 
