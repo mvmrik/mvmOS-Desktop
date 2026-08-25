@@ -6,21 +6,20 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  build:
+  release:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-latest
-            artifact: linux
             args: ""
             rust-targets: ""
           - platform: windows-latest
-            artifact: windows
             args: ""
             rust-targets: ""
           - platform: macos-latest
-            artifact: macos
             args: "--target universal-apple-darwin"
             rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
 
@@ -47,14 +46,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build app
-        run: npm run tauri -- build ${{ matrix.args }}
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: mvmos-desktop-${{ matrix.artifact }}
-          path: |
-            src-tauri/target/release/bundle/**
-            src-tauri/target/*/release/bundle/**
-          if-no-files-found: error
+          tagName: v__VERSION__
+          releaseName: "mvmOS Desktop v__VERSION__"
+          releaseBody: "See the assets below to download for your platform."
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
