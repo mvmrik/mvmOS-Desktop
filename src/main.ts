@@ -25,22 +25,34 @@ function $(id: string): HTMLElement {
   return el;
 }
 
-// Must match `.sidebar { width: ... }` in styles.css.
+// The width the sidebar strip is asked for. The sidebar itself is `width: 100%`
+// of the chrome webview, so this is the only place the number lives.
 const SIDEBAR_WIDTH = 260;
 
 // Bounds are computed from the OS window's own size rather than measured via
-// getBoundingClientRect(): once the chrome webview is pinned to the sidebar
-// strip (see syncChromeLayout below), its own viewport IS just that strip, so
-// reading #content-area's layout from inside it would only ever return a
-// squashed, meaningless rect.
-async function computeLayoutBounds(): Promise<{ sidebar: Bounds; content: Bounds }> {
+// getBoundingClientRect(): the chrome webview's own viewport IS just the
+// sidebar strip, so measuring anything in it can never describe the tab area.
+async function computeLayoutBounds(): Promise<{
+  sidebar: Bounds;
+  content: Bounds;
+  chromeFull: boolean;
+}> {
   const win = getCurrentWindow();
   const scaleFactor = await win.scaleFactor();
   const size = (await win.innerSize()).toLogical(scaleFactor);
-  const contentWidth = Math.max(size.width - SIDEBAR_WIDTH, 0);
+  // While onboarding is up there are no tabs and the card is wider than the
+  // strip, so the chrome takes the whole window instead.
+  const chromeFull = $("shell").classList.contains("hidden");
+  const sidebarWidth = chromeFull ? size.width : SIDEBAR_WIDTH;
   return {
-    sidebar: { x: 0, y: 0, width: SIDEBAR_WIDTH, height: size.height },
-    content: { x: SIDEBAR_WIDTH, y: 0, width: contentWidth, height: size.height },
+    sidebar: { x: 0, y: 0, width: sidebarWidth, height: size.height },
+    content: {
+      x: sidebarWidth,
+      y: 0,
+      width: Math.max(size.width - sidebarWidth, 0),
+      height: size.height,
+    },
+    chromeFull,
   };
 }
 
@@ -48,12 +60,10 @@ async function getContentBounds(): Promise<Bounds> {
   return (await computeLayoutBounds()).content;
 }
 
-// Keeps the chrome (main) webview pinned to the sidebar strip only, so it never
-// overlaps the child webview that renders the active tab's content.
+// Keeps the chrome (main) webview and the active tab's webview from overlapping.
 async function syncChromeLayout() {
-  if ($("shell").classList.contains("hidden")) return;
-  const { sidebar, content } = await computeLayoutBounds();
-  await syncLayout(sidebar, content);
+  const { sidebar, content, chromeFull } = await computeLayoutBounds();
+  await syncLayout(sidebar, content, chromeFull);
 }
 
 let resizeScheduled = false;
@@ -272,6 +282,7 @@ function renderApp() {
   if (installations.length === 0) {
     onboardingEl.classList.remove("hidden");
     shellEl.classList.add("hidden");
+    scheduleResize();
     return;
   }
   onboardingEl.classList.add("hidden");
@@ -332,7 +343,6 @@ function wireStaticHandlers() {
   });
 
   window.addEventListener("resize", scheduleResize);
-  new ResizeObserver(scheduleResize).observe($("content-area"));
 
   listen<{ parentId: string; url: string }>("mvmos://new-child-tab", async (event) => {
     const { parentId, url } = event.payload;

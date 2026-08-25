@@ -9,6 +9,125 @@ use tauri::{
 };
 use url::Url;
 
+/// Linux layout.
+///
+/// On Windows and macOS every webview is a real child surface and
+/// `Webview::set_bounds` positions it. On Linux it is not: `tauri-runtime-wry`
+/// builds every webview - the chrome one included - with `build_gtk` into the
+/// window's single vertical `GtkBox`, packed with `expand: true, fill: true`.
+/// Two visible webviews therefore always split the window in half horizontally,
+/// and `wry`'s `set_bounds` is a no-op there (it only does something for X11
+/// child windows or a `GtkFixed` parent), so no amount of bounds arithmetic can
+/// move them.
+///
+/// So on Linux we let GTK do the layout instead. At startup the chrome webview
+/// is lifted out of the default vbox and the two are put side by side:
+///
+/// ```text
+/// GtkApplicationWindow            GtkApplicationWindow
+///  └ vbox  (every webview)   ->    └ paned
+///                                     ├ chrome webview (fixed width)
+///                                     └ vbox (tab webviews, expands)
+/// ```
+///
+/// Every later `add_child` still lands in the default vbox on its own, and only
+/// one tab is ever visible, so GTK hands the visible one the whole content area
+/// without us computing anything. Hiding the vbox collapses it entirely, which
+/// is how the chrome takes over the full window for the onboarding screen.
+#[cfg(target_os = "linux")]
+mod linux_layout {
+    use gtk::prelude::*;
+    use tauri::{AppHandle, Manager};
+
+    /// Picks the chrome webview out of the default vbox. A GTK menu bar would
+    /// also live there, so match the webview by type rather than by position.
+    fn chrome_widget(vbox: &gtk::Box) -> Option<gtk::Widget> {
+        let children = vbox.children();
+        children
+            .iter()
+            .find(|child| child.type_().name() == "WebKitWebView")
+            .or_else(|| children.first())
+            .cloned()
+    }
+
+    /// Resolves the widgets set up by `install`, or `None` if it never ran.
+    fn parts(app: &AppHandle) -> Option<(gtk::Paned, gtk::Box, gtk::Widget)> {
+        let window = app.get_window("main")?;
+        let vbox = window.default_vbox().ok()?;
+        let paned = vbox.parent()?.downcast::<gtk::Paned>().ok()?;
+        let chrome = paned.child1()?;
+        Some((paned, vbox, chrome))
+    }
+
+    /// The window shows through wherever no webview covers it, and the paned
+    /// handle is a themed widget of its own, so both are painted to match the
+    /// chrome instead of the light GTK defaults.
+    fn apply_theme(window: &gtk::ApplicationWindow) {
+        let provider = gtk::CssProvider::new();
+        let css = b"window { background-color: #1e1f22; }
+                    paned > separator { background-color: #35373b; background-image: none; min-width: 1px; }";
+        if provider.load_from_data(css).is_err() {
+            return;
+        }
+        if let Some(screen) = gtk::prelude::WidgetExt::screen(window) {
+            gtk::StyleContext::add_provider_for_screen(
+                &screen,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    }
+
+    /// Runs once during setup, on the main thread, before any tab exists.
+    pub fn install(app: &AppHandle) -> Result<(), String> {
+        let window = app.get_window("main").ok_or("main window missing")?;
+        let vbox = window.default_vbox().map_err(|e| e.to_string())?;
+        let gtk_window = window.gtk_window().map_err(|e| e.to_string())?;
+        let chrome = chrome_widget(&vbox).ok_or("chrome webview widget missing")?;
+
+        vbox.remove(&chrome);
+        gtk_window.remove(&vbox);
+
+        // Not a GtkBox: a box hands a non-expanding child its *natural* width,
+        // and WebKitGTK reports that as the whole window, which would leave the
+        // tab area one pixel wide. GtkPaned allocates by an explicit position.
+        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+        paned.pack1(&chrome, false, false);
+        paned.pack2(&vbox, true, true);
+        gtk_window.add(&paned);
+
+        apply_theme(&gtk_window);
+
+        paned.show();
+        chrome.show();
+        // Collapsed until the frontend reports it has a sidebar to show.
+        vbox.hide();
+        Ok(())
+    }
+
+    /// Switches between "chrome owns the window" (onboarding) and "chrome is a
+    /// fixed sidebar next to the tab area". GTK is main-thread only and Tauri
+    /// commands are not, so the work is marshalled and the widgets are looked
+    /// up again inside the closure rather than captured.
+    pub fn apply(app: &AppHandle, chrome_full: bool, sidebar_width: i32) {
+        let app = app.clone();
+        let _ = app.clone().run_on_main_thread(move || {
+            let Some((paned, vbox, chrome)) = parts(&app) else {
+                return;
+            };
+            if chrome_full {
+                chrome.set_size_request(-1, -1);
+                vbox.hide();
+            } else {
+                let width = sidebar_width.max(1);
+                chrome.set_size_request(width, -1);
+                vbox.show();
+                paned.set_position(width);
+            }
+        });
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Installation {
     id: String,
@@ -289,7 +408,6 @@ fn open_tab(
 
 #[tauri::command]
 fn activate_tab(state: State<AppState>, tab_id: String, bounds: BoundsInput) -> Result<(), String> {
-    let rect = bounds_to_rect(&bounds);
     let mut active = state.active_tab.lock().unwrap();
     let tabs = state.tabs.lock().unwrap();
 
@@ -302,32 +420,59 @@ fn activate_tab(state: State<AppState>, tab_id: String, bounds: BoundsInput) -> 
     }
 
     let entry = tabs.get(&tab_id).ok_or("Tab not found")?;
-    entry.webview.set_bounds(rect).map_err(|e| e.to_string())?;
+    // On Linux the tab fills the content box GTK already sized for it, and
+    // `set_bounds` would be a no-op anyway - see `linux_layout`.
+    #[cfg(not(target_os = "linux"))]
+    entry
+        .webview
+        .set_bounds(bounds_to_rect(&bounds))
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    let _ = &bounds;
     entry.webview.show().map_err(|e| e.to_string())?;
     *active = Some(tab_id);
     Ok(())
 }
 
-/// Pins the main chrome webview to the sidebar strip only, so it can never overlap
-/// (and fight for stacking order with) the child webviews layered into the content area.
+/// Keeps the chrome webview and the active tab from overlapping: the chrome is
+/// either the sidebar strip or, while the onboarding screen is up, the whole
+/// window. Linux gets there through the GTK hierarchy, every other platform
+/// through webview bounds.
 #[tauri::command]
-fn sync_layout(app: AppHandle, state: State<AppState>, sidebar: BoundsInput, content: BoundsInput) -> Result<(), String> {
-    let main_webview = app.get_webview("main").ok_or("main webview missing")?;
-    main_webview
-        .set_bounds(bounds_to_rect(&sidebar))
-        .map_err(|e| e.to_string())?;
-
-    let active = state.active_tab.lock().unwrap();
-    if let Some(id) = active.as_ref() {
-        let tabs = state.tabs.lock().unwrap();
-        if let Some(entry) = tabs.get(id) {
-            entry
-                .webview
-                .set_bounds(bounds_to_rect(&content))
-                .map_err(|e| e.to_string())?;
-        }
+fn sync_layout(
+    app: AppHandle,
+    state: State<AppState>,
+    sidebar: BoundsInput,
+    content: BoundsInput,
+    chrome_full: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (&state, &content);
+        linux_layout::apply(&app, chrome_full, sidebar.width.round() as i32);
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = chrome_full;
+        let main_webview = app.get_webview("main").ok_or("main webview missing")?;
+        main_webview
+            .set_bounds(bounds_to_rect(&sidebar))
+            .map_err(|e| e.to_string())?;
+
+        let active = state.active_tab.lock().unwrap();
+        if let Some(id) = active.as_ref() {
+            let tabs = state.tabs.lock().unwrap();
+            if let Some(entry) = tabs.get(id) {
+                entry
+                    .webview
+                    .set_bounds(bounds_to_rect(&content))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -376,6 +521,8 @@ pub fn run() {
             let installations = load_installations(&handle);
             let state: State<AppState> = app.state();
             *state.installations.lock().unwrap() = installations;
+            #[cfg(target_os = "linux")]
+            linux_layout::install(&handle)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

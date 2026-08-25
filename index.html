@@ -28,6 +28,11 @@
       </div>
     </div>
 
+    <!--
+      The chrome webview is only ever the sidebar strip (or the whole window
+      while onboarding is up), never the tab area, so status messages live in
+      the sidebar itself - there is no surface of our own next to the tabs.
+    -->
     <div id="shell" class="shell hidden">
       <aside id="sidebar" class="sidebar">
         <div class="sidebar-header">
@@ -35,17 +40,14 @@
           <button id="add-installation-btn" class="icon-btn" title="Add installation">+</button>
         </div>
         <div id="installation-list" class="installation-list"></div>
-      </aside>
-
-      <main id="content-area" class="content-area">
-        <div id="empty-state" class="empty-state">
+        <div id="empty-state" class="status-panel">
           <p id="empty-state-text">Select or open an installation from the sidebar.</p>
         </div>
-        <div id="offline-panel" class="offline-panel hidden">
+        <div id="offline-panel" class="status-panel hidden">
           <p id="offline-message">This installation could not be reached.</p>
           <button id="offline-retry-btn">Retry</button>
         </div>
-      </main>
+      </aside>
     </div>
 
     <div id="add-installation-modal" class="modal hidden">
