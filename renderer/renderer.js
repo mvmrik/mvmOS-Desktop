@@ -710,10 +710,16 @@ function drawBadgeOverlay(count) {
 }
 
 /*
- * Linux gets the whole icon rather than a badge to lay over one: it goes on a
- * status icon the app draws itself, because the panels there are free to
- * ignore the count the app reports and several of them do.
+ * Where there is a tray, the count goes on a whole icon rather than on a badge
+ * laid over one: the app draws that icon itself, which is the point of it - on
+ * Linux the panels are free to ignore the count the app reports and several do,
+ * and on Windows a window closed into the tray has no taskbar button left for
+ * an overlay to sit on. It is drawn whether or not the setting has the tray
+ * showing, since only the main process knows that and the drawing is a canvas
+ * the count changed anyway.
  */
+const TRAY_PLATFORM = window.api.platform === "linux" || window.api.platform === "win32";
+
 let appIcon = null;
 let appIconAsked = false;
 
@@ -771,11 +777,11 @@ function updateAppBadge() {
     const { badge } = parseBadge(tab.title || "");
     if (badge && badge > 0) total += badge;
   }
-  if (window.api.platform === "linux") loadAppIcon();
+  if (TRAY_PLATFORM) loadAppIcon();
   if (total === lastBadgeCount) return;
   lastBadgeCount = total;
   const overlay = total > 0 && window.api.platform === "win32" ? drawBadgeOverlay(total) : null;
-  const trayIcon = total > 0 && window.api.platform === "linux" ? drawTrayIcon(total) : null;
+  const trayIcon = total > 0 && TRAY_PLATFORM ? drawTrayIcon(total) : null;
   window.api.setBadge(total, overlay, trayIcon);
 }
 
@@ -949,6 +955,33 @@ function renderPinSection() {
   renderLockButton();
 }
 
+/* ------------------------------------------------------------------- tray */
+
+/*
+ * Two switches rather than one, because they answer different questions: where
+ * the app is seen, and what the window's close button does. The second needs
+ * the first - a window closed away with no icon left behind it could not be
+ * got back - so it is held off until there is an icon to close into.
+ */
+let trayState = { supported: false, showTray: true, closeToTray: false };
+
+function renderTraySection() {
+  $("tray-section").classList.toggle("hidden", !trayState.supported);
+  if (!trayState.supported) return;
+  $("tray-show").checked = trayState.showTray;
+  $("tray-close").checked = trayState.closeToTray;
+  $("tray-close").disabled = !trayState.showTray;
+  $("tray-show-hint").textContent =
+    window.api.platform === "linux"
+      ? "Unread counts show on it. Without it they are only in the window title and the sidebar, since a Linux panel is free to ignore the count the app reports."
+      : "Unread counts show on it as well as on the taskbar button.";
+}
+
+async function saveTraySettings() {
+  trayState = await window.api.setTray($("tray-show").checked, $("tray-close").checked);
+  renderTraySection();
+}
+
 /* -------------------------------------------------------- extension bar */
 
 /*
@@ -1064,6 +1097,8 @@ async function openSettings() {
   const state = await window.api.lockState();
   hasPin = state.hasPin;
   renderPinSection();
+  trayState = await window.api.trayState();
+  renderTraySection();
   applyExtensionResult(await window.api.listExtensions());
   await showModal("settings-modal");
 }
@@ -1155,6 +1190,9 @@ function wireHandlers() {
   $("extension-folder-btn").addEventListener("click", async () => {
     applyExtensionResult(await window.api.addExtensionFolder());
   });
+
+  $("tray-show").addEventListener("change", saveTraySettings);
+  $("tray-close").addEventListener("change", saveTraySettings);
 
   $("lock-now-btn").addEventListener("click", lockFromHeader);
   $("site-link-btn").addEventListener("click", () => window.api.openExternal("https://mvmos.org"));

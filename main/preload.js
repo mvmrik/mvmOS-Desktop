@@ -30,6 +30,9 @@ contextBridge.exposeInMainWorld("api", {
   reorderTabs: (orderedIds) => ipcRenderer.invoke("tabs:reorder", orderedIds),
   restoreSession: () => ipcRenderer.invoke("session:restore"),
 
+  trayState: () => ipcRenderer.invoke("tray:state"),
+  setTray: (showTray, closeToTray) => ipcRenderer.invoke("tray:set", { showTray, closeToTray }),
+
   lockState: () => ipcRenderer.invoke("lock:state"),
   unlock: (pin) => ipcRenderer.invoke("lock:unlock", pin),
   lockNow: () => ipcRenderer.invoke("lock:lock"),

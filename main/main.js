@@ -57,7 +57,10 @@ const POPUP_MAX = { width: 800, height: 600 };
 let win = null;
 let installations = [];
 let session = {};
-let settings = { pin: null, extensions: [] };
+let settings = { pin: null, extensions: [], showTray: true, closeToTray: false };
+// Set the moment quitting begins, so the window's close handler can tell a real
+// close from the one it turns into a hide; see createWindow().
+let quitting = false;
 
 /** tabId -> { view, info, origin, url, visible } */
 const tabs = new Map();
@@ -688,6 +691,10 @@ function restoreSessionTabs() {
 /* ----------------------------------------------------------------- badging */
 
 let lastBadgeCount = 0;
+// Kept so a tray icon that appears mid-session - the setting switched on, or
+// the icon image only reaching the renderer later - can be given the count that
+// is already showing everywhere else.
+let lastTrayIcon = null;
 
 /*
  * A tab whose page reports unread items puts the total on the app's own icon.
@@ -712,7 +719,8 @@ function applyBadge(count, overlayDataUrl, trayDataUrl) {
   } else {
     app.setBadgeCount(total);
   }
-  applyTrayBadge(total, trayDataUrl);
+  lastTrayIcon = total > 0 ? trayDataUrl || null : null;
+  applyTrayBadge(total, lastTrayIcon);
 
   if (win && !win.isDestroyed()) {
     win.setTitle(total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE);
@@ -777,9 +785,13 @@ function reassertBadge() {
  *
  * A status icon is the one place the app draws the pixels itself. It is asked
  * for, not matched by name against a desktop entry, so what it shows is what
- * the app put there. Only Linux gets one: the Windows taskbar overlay and the
- * macOS dock badge already put the number where the user looks, and a second
- * icon there would only be one more thing in the tray.
+ * the app put there.
+ *
+ * Linux and Windows get one, and it can be turned off. macOS gets none at all:
+ * a status item there sits in the menu bar with no badge of its own, while the
+ * dock icon it would duplicate already carries the count - and closing a window
+ * on macOS leaves the app running anyway, which is the whole of what a tray is
+ * wanted for on the other two.
  */
 let tray = null;
 let trayBaseIcon = null;
@@ -799,8 +811,29 @@ function showWindow() {
   win.focus();
 }
 
+function trayPlatform() {
+  return process.platform === "linux" || process.platform === "win32";
+}
+
+/** True while the icon exists and can be relied on to bring the window back. */
+function trayLive() {
+  return Boolean(tray) && !tray.isDestroyed();
+}
+
+/* Brings the icon in line with the setting, either way, and puts the count back
+   on it: an icon created mid-session has missed everything said so far. */
+function syncTray() {
+  if (trayPlatform() && settings.showTray) {
+    createTray();
+  } else if (trayLive()) {
+    tray.destroy();
+    tray = null;
+  }
+  applyTrayBadge(lastBadgeCount, lastTrayIcon);
+}
+
 function createTray() {
-  if (process.platform !== "linux" || tray) return;
+  if (!trayPlatform() || trayLive()) return;
   const icon = baseTrayIcon();
   if (!icon) return;
   tray = new Tray(icon);
@@ -819,7 +852,7 @@ function createTray() {
 
 /* The icon with the count drawn into it, or the plain one when there is none. */
 function applyTrayBadge(total, trayDataUrl) {
-  if (!tray || tray.isDestroyed()) return;
+  if (!trayLive()) return;
   const image = total > 0 && trayDataUrl ? nativeImage.createFromDataURL(trayDataUrl) : baseTrayIcon();
   if (image && !image.isEmpty()) tray.setImage(image);
   tray.setToolTip(total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE);
@@ -1043,7 +1076,20 @@ function createWindow() {
   win.on("restore", () => reassertBadge());
   win.on("maximize", persistSession);
   win.on("unmaximize", persistSession);
-  win.on("close", () => {
+  win.on("close", (event) => {
+    /*
+     * Closing into the tray is only allowed while there is an icon to close
+     * into: with the setting on but the icon missing - a desktop with no status
+     * area, an image that would not load - hiding the window would leave the
+     * app running with no way back to it. Quitting comes through here as well,
+     * hence the flag: that close is the real one.
+     */
+    if (!quitting && settings.closeToTray && trayLive()) {
+      event.preventDefault();
+      persistSessionNow();
+      win.hide();
+      return;
+    }
     persistSessionNow();
     sessionFrozen = true;
   });
@@ -1209,6 +1255,27 @@ ipcMain.handle("chrome:app-icon", () => {
 ipcMain.handle("update:check", () => runUpdateCheck(true));
 
 /* ----------------------------------------------------------- ipc: settings */
+
+/*
+ * What the settings dialog draws: `supported` is false on macOS, where there is
+ * nothing to offer - the dock keeps the app and its badge after the window is
+ * closed, which is what the other two need a tray for.
+ */
+ipcMain.handle("tray:state", () => ({
+  supported: trayPlatform(),
+  showTray: settings.showTray,
+  closeToTray: settings.closeToTray,
+}));
+
+ipcMain.handle("tray:set", (_event, { showTray, closeToTray }) => {
+  settings.showTray = showTray !== false;
+  // Without an icon there is nowhere for a closed window to go, so the two are
+  // saved as a pair rather than left to contradict each other.
+  settings.closeToTray = settings.showTray && closeToTray === true;
+  store.saveSettings(settings);
+  syncTray();
+  return { supported: trayPlatform(), showTray: settings.showTray, closeToTray: settings.closeToTray };
+});
 
 ipcMain.handle("lock:state", () => ({ locked, hasPin: Boolean(settings.pin) }));
 
@@ -1503,7 +1570,7 @@ app.whenReady().then(async () => {
 
   buildMenu();
   createWindow();
-  createTray();
+  syncTray();
 
   // Late enough that neither the check nor the icon lookups delay the first
   // paint, early enough that the answer is there before the user has finished
@@ -1523,6 +1590,7 @@ app.whenReady().then(async () => {
  */
 let cookiesSaved = false;
 app.on("before-quit", (event) => {
+  quitting = true;
   persistSessionNow();
   if (cookiesSaved) return;
   event.preventDefault();

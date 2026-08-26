@@ -157,6 +157,25 @@
           </form>
         </section>
 
+        <!-- Hidden on macOS, where the dock already does all of this. -->
+        <section class="settings-section hidden" id="tray-section">
+          <h3>Tray</h3>
+          <label class="settings-check">
+            <input type="checkbox" id="tray-show" />
+            <span>
+              Show a tray icon
+              <em class="form-hint" id="tray-show-hint"></em>
+            </span>
+          </label>
+          <label class="settings-check">
+            <input type="checkbox" id="tray-close" />
+            <span>
+              Close to tray
+              <em class="form-hint">The window hides instead of closing, and the app keeps running. Quit from the tray icon.</em>
+            </span>
+          </label>
+        </section>
+
         <section class="settings-section">
           <h3>Chrome extensions</h3>
           <p class="form-hint">

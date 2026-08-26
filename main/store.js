@@ -64,12 +64,21 @@ function saveSession(session) {
 }
 
 /**
- * { pin: { salt, hash } | null, extensions: [absolute paths] } - a file written
- * by an older version simply has fewer of them.
+ * { pin, extensions, showTray, closeToTray } - a file written by an older
+ * version simply has fewer of them.
  */
+const TRAY_DEFAULTS = {
+  // On by default: on Linux it is the only place an unread count is sure to
+  // show, and on Windows it is what a closed-away window is reached through.
+  showTray: true,
+  // Off by default: a window that vanishes instead of closing is not what the
+  // button is expected to do, so it is asked for rather than assumed.
+  closeToTray: false,
+};
+
 function loadSettings() {
   const parsed = readJson("settings.json");
-  if (!parsed || typeof parsed !== "object") return { pin: null, extensions: [] };
+  if (!parsed || typeof parsed !== "object") return { pin: null, extensions: [], ...TRAY_DEFAULTS };
   const pin = parsed.pin;
   return {
     pin: pin && typeof pin.salt === "string" && typeof pin.hash === "string"
@@ -78,6 +87,8 @@ function loadSettings() {
     extensions: Array.isArray(parsed.extensions)
       ? parsed.extensions.filter((p) => typeof p === "string" && p)
       : [],
+    showTray: parsed.showTray !== false,
+    closeToTray: parsed.closeToTray === true,
   };
 }
 

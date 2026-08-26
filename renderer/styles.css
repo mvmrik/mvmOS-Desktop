@@ -731,6 +731,38 @@ button {
   gap: 12px;
 }
 
+/* A checkbox with its explanation under the label, rather than a wall of hint
+   text above a row of boxes nobody reads back to. */
+.settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-check input {
+  width: 15px;
+  height: 15px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Specific enough to beat the section's own hint spacing above it. */
+.settings-section .settings-check em {
+  display: block;
+  margin: 3px 0 0;
+  font-style: normal;
+}
+
+.settings-check input:disabled,
+.settings-check input:disabled + span {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .settings-actions {
   display: flex;
   flex-wrap: wrap;
