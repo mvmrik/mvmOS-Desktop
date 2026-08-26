@@ -15,6 +15,12 @@
  *
  * 2. It sizes the popup to its content. We measure and tell the main process.
  *
+ * 3. It opens a tab when the popup asks for one. Electron has no tab strip for
+ *    extension pages: `runtime.openOptionsPage()` rejects with "Could not
+ *    create an options page." and `tabs.create` is not implemented at all, so
+ *    an extension's own settings button silently does nothing. Both are routed
+ *    to the main process, which opens the page in a window.
+ *
  * The page keeps Node out (nodeIntegration is off); what this script leaves
  * behind on the page is the patched function and nothing else.
  */
@@ -76,6 +82,60 @@ function patchTabsQuery() {
 if (!patchTabsQuery()) {
   process.once("loaded", patchTabsQuery);
   document.addEventListener("DOMContentLoaded", patchTabsQuery, { once: true });
+}
+
+/*
+ * The callback form is what a manifest v2 extension uses and the promise form
+ * what v3 does, and the popup templates out there use either - so both are
+ * answered, the same way the tabs.query patch above does it.
+ */
+function settle(promise, callback) {
+  if (typeof callback === "function") {
+    promise.then((value) => callback(value));
+    return undefined;
+  }
+  return promise;
+}
+
+function patchOpeners() {
+  if (!globalThis.chrome) return false;
+  let done = true;
+
+  const existing = chrome.runtime && chrome.runtime.openOptionsPage;
+  if (chrome.runtime && !(existing && existing.__mvmosPatched)) {
+    const open = function openOptionsPage(callback) {
+      return settle(ipcRenderer.invoke("extension-popup:open-options").then(() => undefined), callback);
+    };
+    open.__mvmosPatched = true;
+    try {
+      chrome.runtime.openOptionsPage = open;
+    } catch {
+      done = false;
+    }
+  }
+
+  // Not a patch but an addition: without it the extension sees no tabs.create
+  // at all and either throws or falls back to telling the user to paste a URL.
+  if (chrome.tabs && typeof chrome.tabs.create !== "function") {
+    const create = function create(properties, callback) {
+      const url = properties && typeof properties === "object" ? properties.url : properties;
+      // An extension expects a tab object back; nothing here has a tab id to
+      // give it, and the callers only ever check that they got something.
+      return settle(ipcRenderer.invoke("extension-popup:open-url", url).then((ok) => (ok ? { url } : null)), callback);
+    };
+    try {
+      chrome.tabs.create = create;
+    } catch {
+      done = false;
+    }
+  }
+
+  return done;
+}
+
+if (!patchOpeners()) {
+  process.once("loaded", patchOpeners);
+  document.addEventListener("DOMContentLoaded", patchOpeners, { once: true });
 }
 
 function reportSize() {

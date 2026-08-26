@@ -243,4 +243,53 @@ function actions(paths) {
   return result;
 }
 
-module.exports = { loadAll, loadOne, unload, list, actions, install, forget, wake };
+/*
+ * Whether an extension has a content script on this page.
+ *
+ * Only ever asked to tell two extensions apart when both could own an icon the
+ * page is showing, so a plain reading of the match patterns is enough rather
+ * than Chromium's full grammar.
+ */
+function escapeRe(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesPattern(pattern, url) {
+  if (pattern === "<all_urls>") return true;
+  const parts = /^(\*|[a-z]+):\/\/(\*|(?:\*\.)?[^/*]*)(\/.*)$/.exec(pattern);
+  if (!parts) return false;
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    return false;
+  }
+  const [, scheme, host, wanted] = parts;
+  // "*" as a scheme means http and https, not literally anything.
+  if (scheme === "*") {
+    if (target.protocol !== "http:" && target.protocol !== "https:") return false;
+  } else if (target.protocol !== `${scheme}:`) {
+    return false;
+  }
+  if (host !== "*") {
+    if (host.startsWith("*.")) {
+      const base = host.slice(2);
+      if (target.hostname !== base && !target.hostname.endsWith(`.${base}`)) return false;
+    } else if (target.hostname !== host) {
+      return false;
+    }
+  }
+  const path = new RegExp(`^${wanted.split("*").map(escapeRe).join(".*")}$`);
+  return path.test(target.pathname + target.search);
+}
+
+function injectsInto(id, url) {
+  for (const extension of loaded.values()) {
+    if (extension.id !== id) continue;
+    const scripts = (extension.manifest && extension.manifest.content_scripts) || [];
+    return scripts.some((entry) => (entry.matches || []).some((pattern) => matchesPattern(pattern, url)));
+  }
+  return false;
+}
+
+module.exports = { loadAll, loadOne, unload, list, actions, install, forget, wake, injectsInto };

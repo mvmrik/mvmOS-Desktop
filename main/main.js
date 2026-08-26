@@ -215,10 +215,13 @@ function openExtensionPopup(id, anchor) {
   view.webContents.on("blur", () => {
     if (extensionPopup && extensionPopup.view === view) closeExtensionPopup();
   });
-  // Links out of a popup ("open my vault") belong in a real window.
+  // Links out of a popup ("open my vault") belong in a real window - the
+  // extension's own pages in one of ours, everything else in the browser.
   view.webContents.setWindowOpenHandler(({ url }) => {
+    const title = action.name;
     closeExtensionPopup();
-    shell.openExternal(url);
+    if (url.startsWith("chrome-extension://")) openExtensionPage(url, title);
+    else shell.openExternal(url);
     return { action: "deny" };
   });
   return true;
@@ -254,6 +257,57 @@ function openExtensionPage(url, title) {
   page.setMenuBarVisibility(false);
   page.loadURL(url);
   return page;
+}
+
+/*
+ * Two of the ways a browser opens an extension's popup are missing here: the
+ * icon an extension draws on a login field, which asks for the popup through
+ * `chrome.action.openPopup()`, and the keyboard shortcut it declares through
+ * `chrome.commands`. Electron implements neither, and both calls are made
+ * where we cannot reach them, so the app opens the popup itself instead.
+ *
+ * Which extension's popup, when the page did not say: the one with a content
+ * script on this page, since that is the only kind that can have drawn an icon
+ * on it. With a single extension loaded the question does not arise, and with
+ * several that all inject here there is nothing left to go on.
+ */
+function extensionForPage(url) {
+  const withPopup = extensionActions.filter((item) => item.popupUrl);
+  if (withPopup.length < 2) return withPopup[0] || null;
+  return withPopup.find((item) => extensions.injectsInto(item.id, url)) || withPopup[0];
+}
+
+/*
+ * The icon's rectangle arrives in the page's own coordinates; the popup is
+ * placed in the window's, which the page is inset into and may be zoomed
+ * against. Without a rectangle - the click came from an iframe - the popup
+ * opens at the top of the page, the way the shortcut opens it.
+ */
+function fieldAnchor(tab, rect) {
+  const content = contentBounds();
+  if (!rect || !Number.isFinite(rect.x) || !Number.isFinite(rect.y)) {
+    return { x: content.x - 4, y: 8, width: 0, height: 0 };
+  }
+  const zoom = tab && !tab.view.webContents.isDestroyed() ? tab.view.webContents.zoomFactor || 1 : 1;
+  return {
+    x: content.x + rect.x * zoom,
+    y: content.y + rect.y * zoom,
+    width: rect.width * zoom,
+    height: rect.height * zoom,
+  };
+}
+
+function openPopupForActiveTab(rect) {
+  if (locked) return false;
+  const tab = activeTabId ? tabs.get(activeTabId) : null;
+  const action = extensionForPage(tab ? tab.url : "");
+  if (!action) return false;
+  // A second press on the same icon closes it again, like the toolbar button.
+  if (extensionPopup && extensionPopup.id === action.id) {
+    closeExtensionPopup();
+    return true;
+  }
+  return openExtensionPopup(action.id, fieldAnchor(tab, rect));
 }
 
 /*
@@ -443,6 +497,9 @@ function createTab({ installationId, kind, parentId, url, id }) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Watches for a click on an icon an extension drew on a login field:
+      // the extension cannot open its own popup here, so we do it for it.
+      preload: path.join(__dirname, "tab-preload.js"),
       // A hidden tab is still a live page: a chat that is not on screen has to
       // keep its socket open, or its notification arrives whenever the user
       // happens to look at it rather than when it was sent.
@@ -651,9 +708,69 @@ function applyBadge(count, overlayDataUrl) {
 
   if (win && !win.isDestroyed()) {
     win.setTitle(total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE);
-    if (total > lastBadgeCount && !win.isFocused()) win.flashFrame(true);
+    if (total > lastBadgeCount && !win.isFocused()) flashBriefly();
   }
   lastBadgeCount = total;
+  scheduleBadgeReassert(total);
+}
+
+/*
+ * The Unity protocol is a broadcast with no state behind it: the panel keeps
+ * what it last heard, and anything that rebuilds its task model - the panel
+ * restarting, the window being remapped, the entry being matched to a launcher
+ * only after the fact - leaves it with nothing, while we sit there believing
+ * we have already said it. The count then quietly falls off the icon although
+ * the title still carries it.
+ *
+ * So on Linux, while there is a count to show, it is said again every so often
+ * and whenever the window itself is mapped anew. Saying it twice costs a signal
+ * nobody reads; saying it once costs the badge. The macOS dock tile and the
+ * Windows taskbar overlay are both properties that stay set until they are
+ * changed, so there is nothing to repeat there.
+ */
+let badgeTimer = null;
+
+/*
+ * The two halves of "something arrived" say different things and should not
+ * last the same length of time. The colour is the announcement - it has been
+ * seen or it has not, and a highlight that stays lit until the window is
+ * focused is just noise once you have looked over at it. The count is the
+ * state, and it belongs on the icon for as long as the page still reports it.
+ *
+ * Which colour the announcement is drawn in is the window manager's to choose:
+ * flashFrame only raises the window's urgency flag, and every desktop paints
+ * that its own way.
+ */
+const FLASH_MS = 5000;
+let flashTimer = null;
+
+function stopFlashing() {
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = null;
+  if (win && !win.isDestroyed()) win.flashFrame(false);
+}
+
+function flashBriefly() {
+  if (!win || win.isDestroyed()) return;
+  win.flashFrame(true);
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    flashTimer = null;
+    stopFlashing();
+  }, FLASH_MS);
+}
+
+function scheduleBadgeReassert(total) {
+  if (badgeTimer) clearInterval(badgeTimer);
+  badgeTimer = null;
+  if (process.platform !== "linux" || total <= 0) return;
+  badgeTimer = setInterval(() => reassertBadge(), 15000);
+}
+
+function reassertBadge() {
+  if (process.platform !== "linux") return;
+  if (lastBadgeCount <= 0 || !app.isReady()) return;
+  app.setBadgeCount(lastBadgeCount);
 }
 
 /* -------------------------------------------------------------- fullscreen */
@@ -761,6 +878,13 @@ function buildMenu() {
             if (tab) tab.view.webContents.reload();
           },
         },
+        {
+          // The shortcut extensions ask for through chrome.commands, which
+          // Electron does not implement; see openPopupForActiveTab().
+          label: "Extension popup",
+          accelerator: "CmdOrCtrl+Shift+L",
+          click: () => openPopupForActiveTab(null),
+        },
         { type: "separator" },
         {
           label: "Developer tools",
@@ -860,7 +984,11 @@ function createWindow() {
     applyLayout();
     setTimeout(applyLayout, 150);
   });
-  win.on("focus", () => win.flashFrame(false));
+  win.on("focus", () => stopFlashing());
+  // A window that is mapped again arrives in the task list as a new entry, so
+  // whatever count it carried has to be said over; see reassertBadge().
+  win.on("show", () => reassertBadge());
+  win.on("restore", () => reassertBadge());
   win.on("maximize", persistSession);
   win.on("unmaximize", persistSession);
   win.on("close", () => {
@@ -1156,6 +1284,13 @@ ipcMain.handle("extensions:popup", (_event, { id, anchor, toggle }) => {
 
 ipcMain.handle("extensions:popup-close", () => closeExtensionPopup());
 
+/* A login field's own icon was clicked, in whichever page the user is on. */
+ipcMain.on("tab:extension-icon", (event, rect) => {
+  const tab = activeTabId ? tabs.get(activeTabId) : null;
+  if (!tab || tab.view.webContents !== event.sender) return;
+  openPopupForActiveTab(rect);
+});
+
 ipcMain.handle("extensions:menu", (_event, id) => {
   const action = extensionActions.find((item) => item.id === id);
   if (!action) return;
@@ -1194,6 +1329,48 @@ ipcMain.handle("extensions:menu", (_event, id) => {
 ipcMain.handle("extension-popup:active-tab", () => {
   const tab = activeTabId ? tabs.get(activeTabId) : null;
   return tab && !tab.view.webContents.isDestroyed() ? tab.view.webContents.id : -1;
+});
+
+/*
+ * A browser answers `runtime.openOptionsPage()` and `tabs.create()` by opening
+ * a tab. Electron has no tab strip for extension pages, so it answers the
+ * first with "Could not create an options page." and does not implement the
+ * second at all - which is why an extension's own settings button did nothing.
+ * They come here instead: the options page opens in the same window the
+ * right-click menu uses, and any other address goes to the browser.
+ */
+function popupOwner(event) {
+  const host = popupHost();
+  if (!extensionPopup || !host || event.sender !== host) return null;
+  const { id } = extensionPopup;
+  return { id, name: (extensionActions.find((item) => item.id === id) || {}).name || "Extension" };
+}
+
+ipcMain.handle("extension-popup:open-options", (event) => {
+  const owner = popupOwner(event);
+  if (!owner) return false;
+  const options = optionsUrlOf(owner.id);
+  // The popup goes either way: a browser's closes the moment it loses focus.
+  closeExtensionPopup();
+  if (!options) return false;
+  openExtensionPage(options, owner.name);
+  return true;
+});
+
+ipcMain.handle("extension-popup:open-url", (event, url) => {
+  const owner = popupOwner(event);
+  if (!owner) return false;
+  const target = typeof url === "string" ? url : "";
+  closeExtensionPopup();
+  if (target.startsWith("chrome-extension://")) {
+    openExtensionPage(target, owner.name);
+    return true;
+  }
+  if (/^https?:/i.test(target)) {
+    shell.openExternal(target);
+    return true;
+  }
+  return false;
 });
 
 ipcMain.on("extension-popup:size", (event, size) => {

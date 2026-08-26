@@ -12,7 +12,10 @@
 const { httpGet } = require("./net");
 
 const LATEST_RELEASE_URL = "https://api.github.com/repos/mvmrik/mvmOS-Desktop/releases/latest";
-const RELEASES_PAGE = "https://github.com/mvmrik/mvmOS-Desktop/releases/latest";
+// Where the user is sent to get it: the site reads the same release and offers
+// the one file that fits the browser it is opened from, which is a better
+// landing than a list of every artefact the build produced.
+const DOWNLOAD_PAGE = "https://mvmos.org/download";
 
 function parseVersion(raw) {
   const cleaned = String(raw || "").trim().replace(/^v/i, "");
@@ -50,7 +53,7 @@ async function checkForUpdate(currentVersion) {
     if (release.draft || release.prerelease) return null;
     const version = String(release.tag_name || release.name || "").replace(/^v/i, "");
     if (!isNewer(version, currentVersion)) return null;
-    return { version, url: release.html_url || RELEASES_PAGE };
+    return { version, url: DOWNLOAD_PAGE };
   } catch {
     // No network, a rate limit or a malformed answer all mean the same thing
     // here: nothing to tell the user about.
