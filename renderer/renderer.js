@@ -12,6 +12,12 @@ let statusRetryHandler = null;
 // the render pass because renderSidebar() rebuilds the list from scratch.
 const revealedActions = new Set();
 
+/** The message out of an IPC rejection, without the plumbing around it. */
+function cleanError(e) {
+  if (!e || !e.message) return String(e);
+  return e.message.replace(/^Error invoking remote method '[^']*': Error: /, "");
+}
+
 function $(id) {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing element #${id}`);
@@ -92,6 +98,7 @@ async function openInstallationModal(installation = null) {
   $("modal-name").value = installation ? installation.name : "";
   $("modal-address").value = installation ? installation.address : "";
   $("modal-type").value = installation && installation.type === "site" ? "site" : "mvmos";
+  $("modal-remove-btn").classList.toggle("hidden", !installation);
   updateTypeHint();
   $("modal-error").classList.add("hidden");
   await showModal("installation-modal");
@@ -102,6 +109,51 @@ async function openInstallationModal(installation = null) {
 
 function findTopLevelTab(installationId, kind) {
   return tabs.find((t) => t.installationId === installationId && t.kind === kind && !t.parentId);
+}
+
+/*
+ * The flat list, re-laid so every tab is followed by its own children. Moving a
+ * tab only swaps it with the sibling next to it; this is what keeps the subtree
+ * underneath it from being left behind.
+ */
+function flattenTabOrder(list) {
+  const out = [];
+  const visit = (parentId) => {
+    for (const tab of list) {
+      if ((tab.parentId || null) !== parentId) continue;
+      out.push(tab);
+      visit(tab.id);
+    }
+  };
+  visit(null);
+  for (const tab of list) if (!out.includes(tab)) out.push(tab);
+  return out;
+}
+
+function siblingsOf(tab) {
+  return tabs.filter(
+    (t) => t.installationId === tab.installationId && (t.parentId || null) === (tab.parentId || null),
+  );
+}
+
+async function moveTab(tabId, delta) {
+  const tab = tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  const siblings = siblingsOf(tab);
+  const index = siblings.indexOf(tab);
+  const target = index + delta;
+  if (target < 0 || target >= siblings.length) return;
+
+  const other = siblings[target];
+  const a = tabs.indexOf(tab);
+  const b = tabs.indexOf(other);
+  tabs[a] = other;
+  tabs[b] = tab;
+  tabs = flattenTabOrder(tabs);
+  renderSidebar();
+  // The main process writes the session file in its own order, so it has to be
+  // told, or the tabs come back in the old one on the next start.
+  await window.api.reorderTabs(tabs.map((t) => t.id));
 }
 
 function collectWithDescendants(tabId) {
@@ -222,7 +274,7 @@ async function submitInstallationForm(event) {
     await hideModal("installation-modal");
     renderApp();
   } catch (e) {
-    errorEl.textContent = e && e.message ? e.message.replace(/^Error invoking remote method '[^']*': Error: /, "") : String(e);
+    errorEl.textContent = cleanError(e);
     errorEl.classList.remove("hidden");
   } finally {
     submitBtn.disabled = false;
@@ -235,13 +287,64 @@ async function persistOrder() {
   renderSidebar();
 }
 
-async function moveInstallation(id, delta) {
-  const index = installations.findIndex((i) => i.id === id);
-  const target = index + delta;
-  if (index === -1 || target < 0 || target >= installations.length) return;
-  const [item] = installations.splice(index, 1);
-  installations.splice(target, 0, item);
+/*
+ * The sidebar is not a flat list of installations: every mvmOS installation is
+ * a block of its own, and all the plain websites share one "Websites" block,
+ * which sits where the first of them does. Moving things around therefore
+ * happens in terms of these units, and the flat order is derived back from them
+ * when it is saved.
+ */
+const WEBSITES_UNIT = "__websites__";
+
+function sidebarUnits() {
+  const sites = installations.filter((i) => i.type === "site");
+  const units = [];
+  let websitesPlaced = false;
+  for (const installation of installations) {
+    if (installation.type === "site") {
+      if (websitesPlaced) continue;
+      websitesPlaced = true;
+      units.push({ id: WEBSITES_UNIT, kind: "websites", sites });
+      continue;
+    }
+    units.push({ id: installation.id, kind: "installation", installation });
+  }
+  return units;
+}
+
+async function applyUnitOrder(units) {
+  const ordered = [];
+  for (const unit of units) {
+    if (unit.kind === "websites") ordered.push(...unit.sites);
+    else ordered.push(unit.installation);
+  }
+  installations = ordered;
   await persistOrder();
+}
+
+async function moveUnit(unitId, delta) {
+  const units = sidebarUnits();
+  const index = units.findIndex((u) => u.id === unitId);
+  const target = index + delta;
+  if (index === -1 || target < 0 || target >= units.length) return;
+  const [unit] = units.splice(index, 1);
+  units.splice(target, 0, unit);
+  await applyUnitOrder(units);
+}
+
+/** Moves one website within the Websites block, leaving the blocks themselves alone. */
+async function moveWebsite(id, delta) {
+  const units = sidebarUnits();
+  const group = units.find((u) => u.kind === "websites");
+  if (!group) return;
+  const sites = [...group.sites];
+  const index = sites.findIndex((i) => i.id === id);
+  const target = index + delta;
+  if (index === -1 || target < 0 || target >= sites.length) return;
+  const [site] = sites.splice(index, 1);
+  sites.splice(target, 0, site);
+  group.sites = sites;
+  await applyUnitOrder(units);
 }
 
 /* ------------------------------------------------------------------ render */
@@ -286,38 +389,98 @@ function makeIconButton({ label, title, className, onClick, disabled = false }) 
   return btn;
 }
 
-function renderTabRow(tab, depth) {
+/*
+ * An mvmOS app announces itself with an emoji in front of its title ("✅ Tasks"),
+ * and that emoji is the only thing that tells one app of an installation apart
+ * from another - every page of the installation serves the same favicon. So the
+ * emoji becomes the row's icon and is taken out of the label, and a favicon that
+ * is merely the installation's own is left off rather than repeated down the
+ * whole tab tree.
+ */
+const LEADING_EMOJI = /^\s*(\p{Extended_Pictographic}\uFE0F?(?:\u200D\p{Extended_Pictographic}\uFE0F?)*)\s*/u;
+
+function splitEmoji(title) {
+  const match = LEADING_EMOJI.exec(title || "");
+  if (!match) return { emoji: null, label: title };
+  const rest = title.slice(match[0].length).trim();
+  return rest ? { emoji: match[1], label: rest } : { emoji: null, label: title };
+}
+
+function makeEmojiIcon(emoji) {
+  const span = document.createElement("span");
+  span.className = "emoji-icon";
+  span.textContent = emoji;
+  return span;
+}
+
+/*
+ * A favicon of the page's own wins; the emoji is what an mvmOS app has instead
+ * of one, since every page of an installation serves the same icon and that one
+ * is dropped here as a repeat. Returns the emoji it used, so the label can have
+ * it taken out - and keeps it in the label when the favicon was shown instead.
+ */
+function makeTabIcon(tab, emoji, installation) {
+  if (tab.icon && (!installation || tab.icon !== installation.icon)) {
+    return { node: makeSiteIcon(tab.icon, tab.title), usedEmoji: false };
+  }
+  if (emoji) return { node: makeEmojiIcon(emoji), usedEmoji: true };
+  return { node: null, usedEmoji: false };
+}
+
+function makeBadge(count) {
+  const badgeEl = document.createElement("span");
+  badgeEl.className = "tab-badge";
+  badgeEl.textContent = String(count);
+  return badgeEl;
+}
+
+/*
+ * Up/down for a row that has somewhere to go. `move` gets the direction; the
+ * buttons are only added when there is more than one row to shuffle.
+ */
+function appendMoveButtons(row, { index, total, move }) {
+  if (total < 2) return;
+  row.appendChild(makeIconButton({ label: "▲", title: "Move up", onClick: () => move(-1), disabled: index === 0 }));
+  row.appendChild(makeIconButton({ label: "▼", title: "Move down", onClick: () => move(1), disabled: index === total - 1 }));
+}
+
+function renderTabRow(tab, depth, installation) {
   const wrapper = document.createElement("div");
   wrapper.className = "tab-row-wrapper";
 
   const row = document.createElement("div");
   row.className = "tab-row" + (tab.id === activeTabId ? " active" : "");
   row.style.paddingLeft = `${12 + depth * 16}px`;
+  // The whole row, not just the text: clicking the padding at either end used
+  // to highlight the row and then do nothing.
+  row.addEventListener("click", () => switchToTab(tab.id));
 
-  const { label: labelText, badge } = parseBadge(tab.title);
+  const { label: withoutBadge, badge } = parseBadge(tab.title);
+  const { emoji, label: withoutEmoji } = splitEmoji(withoutBadge);
 
-  row.appendChild(makeSiteIcon(tab.icon, tab.installationName || labelText));
+  const icon = makeTabIcon(tab, emoji, installation);
+  if (icon.node) row.appendChild(icon.node);
 
   const label = document.createElement("span");
   label.className = "tab-label";
-  label.textContent = labelText;
-  label.addEventListener("click", () => switchToTab(tab.id));
+  label.textContent = icon.usedEmoji ? withoutEmoji : withoutBadge;
   row.appendChild(label);
 
-  if (badge !== null && badge > 0) {
-    const badgeEl = document.createElement("span");
-    badgeEl.className = "tab-badge";
-    badgeEl.textContent = String(badge);
-    row.appendChild(badgeEl);
-  }
+  if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
 
+  const siblings = siblingsOf(tab);
+  appendMoveButtons(row, {
+    index: siblings.indexOf(tab),
+    total: siblings.length,
+    move: (delta) => moveTab(tab.id, delta),
+  });
   row.appendChild(
     makeIconButton({ label: "×", title: "Close tab", className: "remove", onClick: () => closeTabUi(tab.id) }),
   );
 
   wrapper.appendChild(row);
   for (const child of tabs.filter((t) => t.parentId === tab.id)) {
-    wrapper.appendChild(renderTabRow(child, depth + 1));
+    wrapper.appendChild(renderTabRow(child, depth + 1, installation));
   }
   return wrapper;
 }
@@ -330,10 +493,10 @@ function makeActionButton(label, onClick) {
   return btn;
 }
 
-function renderInstallationBlock(installation, index) {
+function renderInstallationBlock(installation, index, total) {
   const block = document.createElement("div");
   block.className = "installation-block";
-  block.dataset.id = installation.id;
+  block.dataset.unit = installation.id;
   block.draggable = true;
 
   const header = document.createElement("div");
@@ -347,22 +510,7 @@ function renderInstallationBlock(installation, index) {
   nameSpan.textContent = installation.name;
   header.appendChild(nameSpan);
 
-  header.appendChild(
-    makeIconButton({
-      label: "▲",
-      title: "Move up",
-      onClick: () => moveInstallation(installation.id, -1),
-      disabled: index === 0,
-    }),
-  );
-  header.appendChild(
-    makeIconButton({
-      label: "▼",
-      title: "Move down",
-      onClick: () => moveInstallation(installation.id, 1),
-      disabled: index === installations.length - 1,
-    }),
-  );
+  appendMoveButtons(header, { index, total, move: (delta) => moveUnit(installation.id, delta) });
   header.appendChild(
     makeIconButton({ label: "✎", title: "Edit installation", onClick: () => openInstallationModal(installation) }),
   );
@@ -391,37 +539,127 @@ function renderInstallationBlock(installation, index) {
 
   const actions = document.createElement("div");
   actions.className = "installation-actions";
-  // A plain website has one page to open; an mvmOS installation has two.
-  if (installation.type === "site") {
-    actions.appendChild(
-      makeActionButton("Open", () => {
-        hideActions();
-        openOrSwitch(installation.id, "site");
-      }),
-    );
-  } else {
-    actions.appendChild(
-      makeActionButton("mvmOS Desktop", () => {
-        hideActions();
-        openOrSwitch(installation.id, "desktop");
-      }),
-    );
-    actions.appendChild(
-      makeActionButton("mvmOS Public", () => {
-        hideActions();
-        openOrSwitch(installation.id, "apphub");
-      }),
-    );
-  }
+  actions.appendChild(
+    makeActionButton("mvmOS Desktop", () => {
+      hideActions();
+      openOrSwitch(installation.id, "desktop");
+    }),
+  );
+  actions.appendChild(
+    makeActionButton("mvmOS Public", () => {
+      hideActions();
+      openOrSwitch(installation.id, "apphub");
+    }),
+  );
   block.appendChild(actions);
 
   const topLevelTabs = tabs.filter((t) => t.installationId === installation.id && !t.parentId);
   if (topLevelTabs.length) {
     const tabTree = document.createElement("div");
     tabTree.className = "tab-tree";
-    for (const tab of topLevelTabs) tabTree.appendChild(renderTabRow(tab, 0));
+    for (const tab of topLevelTabs) tabTree.appendChild(renderTabRow(tab, 0, installation));
     block.appendChild(tabTree);
   }
+
+  return block;
+}
+
+/* --------------------------------------------------------------- websites */
+
+// Which sidebar groups the user has folded away. Outside the render pass for
+// the same reason the revealed actions are.
+const collapsedGroups = new Set();
+
+/*
+ * A website is one page, so giving each of them a block with a name, an "Open"
+ * button and a single tab underneath said the same thing three times. They all
+ * live in one block instead, one row each, and the row is the tab.
+ */
+function renderWebsiteRow(site, index, total) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "tab-row-wrapper";
+
+  const rootTab = tabs.find((t) => t.installationId === site.id && !t.parentId);
+  const row = document.createElement("div");
+  row.className = "tab-row" + (rootTab && rootTab.id === activeTabId ? " active" : "");
+  row.title = site.address;
+  row.addEventListener("click", () => openOrSwitch(site.id, "site"));
+
+  row.appendChild(makeSiteIcon(site.icon, site.name));
+
+  const label = document.createElement("span");
+  label.className = "tab-label";
+  // The site keeps the name it was added under: a messenger rewrites its own
+  // title with whatever conversation is open, which makes for a restless list.
+  label.textContent = site.name;
+  row.appendChild(label);
+
+  if (rootTab) {
+    const { badge } = parseBadge(rootTab.title || "");
+    if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
+  }
+
+  appendMoveButtons(row, { index, total, move: (delta) => moveWebsite(site.id, delta) });
+  row.appendChild(
+    makeIconButton({ label: "✎", title: "Edit website", onClick: () => openInstallationModal(site) }),
+  );
+  if (rootTab) {
+    row.appendChild(
+      makeIconButton({ label: "×", title: "Close tab", className: "remove", onClick: () => closeTabUi(rootTab.id) }),
+    );
+  }
+
+  wrapper.appendChild(row);
+  if (rootTab) {
+    for (const child of tabs.filter((t) => t.parentId === rootTab.id)) {
+      wrapper.appendChild(renderTabRow(child, 1, site));
+    }
+  }
+  return wrapper;
+}
+
+function renderWebsitesGroup(sites, index, total) {
+  const block = document.createElement("div");
+  block.className = "installation-block";
+  block.dataset.unit = WEBSITES_UNIT;
+  block.draggable = true;
+
+  const collapsed = collapsedGroups.has(WEBSITES_UNIT);
+  if (collapsed) block.classList.add("collapsed");
+
+  const header = document.createElement("div");
+  header.className = "installation-header";
+
+  const chevron = document.createElement("span");
+  chevron.className = "group-chevron";
+  chevron.textContent = "▾";
+  header.appendChild(chevron);
+
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "installation-name";
+  nameSpan.textContent = "Websites";
+  header.appendChild(nameSpan);
+
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent = String(sites.length);
+  header.appendChild(count);
+
+  appendMoveButtons(header, { index, total, move: (delta) => moveUnit(WEBSITES_UNIT, delta) });
+
+  header.addEventListener("click", () => {
+    if (collapsed) collapsedGroups.delete(WEBSITES_UNIT);
+    else collapsedGroups.add(WEBSITES_UNIT);
+    renderSidebar();
+  });
+  block.appendChild(header);
+
+  const tabTree = document.createElement("div");
+  tabTree.className = "tab-tree";
+  sites.forEach((site, siteIndex) => {
+    tabTree.appendChild(renderWebsiteRow(site, siteIndex, sites.length));
+  });
+  block.appendChild(tabTree);
 
   return block;
 }
@@ -429,8 +667,13 @@ function renderInstallationBlock(installation, index) {
 function renderSidebar() {
   const container = $("installation-list");
   container.innerHTML = "";
-  installations.forEach((installation, index) => {
-    container.appendChild(renderInstallationBlock(installation, index));
+  const units = sidebarUnits();
+  units.forEach((unit, index) => {
+    container.appendChild(
+      unit.kind === "websites"
+        ? renderWebsitesGroup(unit.sites, index, units.length)
+        : renderInstallationBlock(unit.installation, index, units.length),
+    );
   });
   updateAppBadge();
 }
@@ -539,7 +782,7 @@ function wireDragAndDrop() {
   list.addEventListener("dragstart", (event) => {
     const block = event.target.closest(".installation-block");
     if (!block) return;
-    draggedId = block.dataset.id;
+    draggedId = block.dataset.unit;
     block.classList.add("dragging");
     event.dataTransfer.effectAllowed = "move";
     // Firefox-style requirement that some data is set for the drag to start.
@@ -551,7 +794,7 @@ function wireDragAndDrop() {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     const block = event.target.closest(".installation-block");
-    if (!block || block.dataset.id === draggedId) return;
+    if (!block || block.dataset.unit === draggedId) return;
     const rect = block.getBoundingClientRect();
     const after = event.clientY > rect.top + rect.height / 2;
     clearDropMarkers();
@@ -565,17 +808,18 @@ function wireDragAndDrop() {
     const movedId = draggedId;
     draggedId = null;
     clearDropMarkers();
-    if (!block || block.dataset.id === movedId) return;
+    if (!block || block.dataset.unit === movedId) return;
 
     const rect = block.getBoundingClientRect();
     const after = event.clientY > rect.top + rect.height / 2;
-    const from = installations.findIndex((i) => i.id === movedId);
+    const units = sidebarUnits();
+    const from = units.findIndex((u) => u.id === movedId);
     if (from === -1) return;
-    const [item] = installations.splice(from, 1);
-    let to = installations.findIndex((i) => i.id === block.dataset.id);
-    if (to === -1) to = installations.length - 1;
-    installations.splice(after ? to + 1 : to, 0, item);
-    await persistOrder();
+    const [unit] = units.splice(from, 1);
+    let to = units.findIndex((u) => u.id === block.dataset.unit);
+    if (to === -1) to = units.length - 1;
+    units.splice(after ? to + 1 : to, 0, unit);
+    await applyUnitOrder(units);
   });
 
   list.addEventListener("dragend", () => {
@@ -583,6 +827,198 @@ function wireDragAndDrop() {
     clearDropMarkers();
     for (const el of document.querySelectorAll(".dragging")) el.classList.remove("dragging");
   });
+}
+
+/* ------------------------------------------------------------------- lock */
+
+let isLocked = false;
+
+function showLockScreen(show) {
+  isLocked = show;
+  $("lock-screen").classList.toggle("hidden", !show);
+  $("lock-error").classList.add("hidden");
+  if (show) {
+    $("lock-pin").value = "";
+    $("lock-pin").focus();
+  }
+}
+
+async function submitUnlock(event) {
+  event.preventDefault();
+  const ok = await window.api.unlock($("lock-pin").value);
+  if (ok) {
+    showLockScreen(false);
+    return;
+  }
+  $("lock-error").classList.remove("hidden");
+  $("lock-pin").value = "";
+  $("lock-pin").focus();
+}
+
+/* --------------------------------------------------------------- settings */
+
+let hasPin = false;
+
+function renderPinSection() {
+  $("pin-status").textContent = hasPin
+    ? "A PIN is set. The app asks for it every time it starts."
+    : "No PIN. Set one and the app will ask for it on every start; leave it empty and it never does.";
+  $("pin-current-label").classList.toggle("hidden", !hasPin);
+  $("pin-new-label").textContent = hasPin ? "New PIN" : "PIN";
+  $("pin-save-btn").textContent = hasPin ? "Change PIN" : "Set PIN";
+  $("pin-remove-btn").classList.toggle("hidden", !hasPin);
+  $("pin-lock-btn").classList.toggle("hidden", !hasPin);
+  $("pin-error").classList.add("hidden");
+  $("pin-current").value = "";
+  $("pin-new").value = "";
+}
+
+/* -------------------------------------------------------- extension bar */
+
+/*
+ * The buttons a browser would put in its toolbar. The list comes from the main
+ * process, which knows what actually loaded; clicking one asks it to hang the
+ * extension's popup under the button, so the anchor travels with the click.
+ */
+let extensionActions = [];
+let openExtensionId = null;
+
+function extensionInitials(name) {
+  const words = String(name || "?").trim().split(/\s+/).slice(0, 2);
+  return words.map((word) => word[0]).join("").toUpperCase() || "?";
+}
+
+function renderExtensionBar() {
+  const bar = $("extension-bar");
+  bar.innerHTML = "";
+  bar.classList.toggle("hidden", extensionActions.length === 0);
+  if (!extensionActions.length) return;
+
+  for (const action of extensionActions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "extension-btn";
+    button.title = action.title || action.name;
+    button.classList.toggle("open", action.id === openExtensionId);
+
+    if (action.icon) {
+      const img = document.createElement("img");
+      img.src = action.icon;
+      img.alt = "";
+      button.appendChild(img);
+    } else {
+      button.textContent = extensionInitials(action.name);
+    }
+
+    button.addEventListener("click", async () => {
+      // The main process places the popup in window coordinates, which is what
+      // getBoundingClientRect gives us: the chrome fills the whole window.
+      const rect = button.getBoundingClientRect();
+      const anchorRect = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+      const wasOpen = openExtensionId === action.id;
+      const opened = await window.api.openExtensionPopup(action.id, anchorRect);
+      openExtensionId = opened && !wasOpen ? action.id : null;
+      renderExtensionBar();
+    });
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      window.api.extensionMenu(action.id);
+    });
+    bar.appendChild(button);
+  }
+}
+
+function setExtensionActions(actions) {
+  extensionActions = Array.isArray(actions) ? actions : [];
+  if (!extensionActions.some((action) => action.id === openExtensionId)) openExtensionId = null;
+  renderExtensionBar();
+}
+
+function renderExtensions(list) {
+  const container = $("extension-list");
+  container.innerHTML = "";
+  if (!list.length) {
+    const empty = document.createElement("p");
+    empty.className = "form-hint";
+    empty.textContent = "None loaded.";
+    container.appendChild(empty);
+    return;
+  }
+  for (const extension of list) {
+    const row = document.createElement("div");
+    row.className = "extension-row";
+
+    const text = document.createElement("div");
+    text.className = "extension-text";
+    const name = document.createElement("strong");
+    name.textContent = extension.version ? `${extension.name} ${extension.version}` : extension.name;
+    text.appendChild(name);
+    const detail = document.createElement("span");
+    detail.className = extension.error ? "extension-error" : "";
+    // A folder we unpacked ourselves is an implementation detail; the path
+    // only matters for one the user picked and may want to update in place.
+    detail.textContent = extension.error || (extension.managed ? "Added from a file" : extension.path);
+    text.appendChild(detail);
+    row.appendChild(text);
+
+    row.appendChild(
+      makeIconButton({
+        label: "×",
+        title: "Remove extension",
+        className: "remove",
+        onClick: async () => applyExtensionResult(await window.api.removeExtension(extension.path)),
+      }),
+    );
+    container.appendChild(row);
+  }
+}
+
+/*
+ * Adding and removing both answer with the whole list plus, if something went
+ * wrong with one folder, the reason - the list is still worth showing.
+ */
+function applyExtensionResult(result) {
+  const list = Array.isArray(result) ? result : result.list;
+  renderExtensions(list);
+  $("extension-note").textContent =
+    (result && result.message) || "Extensions load at startup; a new one is live in tabs you open or reload from now on.";
+}
+
+async function openSettings() {
+  const state = await window.api.lockState();
+  hasPin = state.hasPin;
+  renderPinSection();
+  applyExtensionResult(await window.api.listExtensions());
+  await showModal("settings-modal");
+}
+
+async function submitPinForm(event) {
+  event.preventDefault();
+  const errorEl = $("pin-error");
+  errorEl.classList.add("hidden");
+  try {
+    const result = await window.api.setPin($("pin-current").value, $("pin-new").value);
+    hasPin = result.hasPin;
+    renderPinSection();
+    $("pin-status").textContent = "PIN saved.";
+  } catch (e) {
+    errorEl.textContent = cleanError(e);
+    errorEl.classList.remove("hidden");
+  }
+}
+
+async function removePin() {
+  const errorEl = $("pin-error");
+  errorEl.classList.add("hidden");
+  try {
+    const result = await window.api.clearPin($("pin-current").value);
+    hasPin = result.hasPin;
+    renderPinSection();
+    $("pin-status").textContent = "PIN removed.";
+  } catch (e) {
+    errorEl.textContent = cleanError(e);
+    errorEl.classList.remove("hidden");
+  }
 }
 
 /* ----------------------------------------------------------------- wiring */
@@ -610,9 +1046,7 @@ function wireHandlers() {
       $("onboarding-address").value = "";
       renderApp();
     } catch (e) {
-      errorEl.textContent = e && e.message
-        ? e.message.replace(/^Error invoking remote method '[^']*': Error: /, "")
-        : String(e);
+      errorEl.textContent = cleanError(e);
       errorEl.classList.remove("hidden");
     } finally {
       submitBtn.disabled = false;
@@ -625,16 +1059,50 @@ function wireHandlers() {
   $("hide-sidebar-btn").addEventListener("click", () => window.api.setSidebarVisible(false));
   $("modal-cancel-btn").addEventListener("click", () => hideModal("installation-modal"));
   $("installation-form").addEventListener("submit", submitInstallationForm);
+  $("modal-remove-btn").addEventListener("click", async () => {
+    const installation = installations.find((i) => i.id === editingId);
+    if (!installation) return;
+    await hideModal("installation-modal");
+    await handleRemoveInstallation(installation);
+  });
+
+  $("settings-close-btn").addEventListener("click", () => hideModal("settings-modal"));
+  $("pin-form").addEventListener("submit", submitPinForm);
+  $("pin-remove-btn").addEventListener("click", removePin);
+  $("pin-lock-btn").addEventListener("click", async () => {
+    await hideModal("settings-modal");
+    await window.api.lockNow();
+  });
+  $("extension-add-btn").addEventListener("click", async () => {
+    applyExtensionResult(await window.api.addExtension());
+  });
+  $("extension-folder-btn").addEventListener("click", async () => {
+    applyExtensionResult(await window.api.addExtensionFolder());
+  });
+
+  $("lock-form").addEventListener("submit", submitUnlock);
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    // Escape must not dismiss the lock screen; it is the one overlay that is
+    // not the user's to close.
+    if (isLocked) return;
+    if (openExtensionId) window.api.closeExtensionPopup();
     if (!$("installation-modal").classList.contains("hidden")) hideModal("installation-modal");
+    else if (!$("settings-modal").classList.contains("hidden")) hideModal("settings-modal");
     else if (!$("confirm-modal").classList.contains("hidden")) $("confirm-cancel-btn").click();
   });
 
   wireDragAndDrop();
 
   window.api.onAddInstallationRequested(() => openInstallationModal(null));
+  window.api.onSettingsRequested(() => openSettings());
+  window.api.onExtensionActions((actions) => setExtensionActions(actions));
+  window.api.onExtensionPopupClosed(() => {
+    openExtensionId = null;
+    renderExtensionBar();
+  });
+  window.api.onLockChanged((value) => showLockScreen(value));
 
   window.api.onSidebarChanged((visible) => {
     sidebarVisible = visible;
@@ -696,6 +1164,15 @@ function wireHandlers() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   wireHandlers();
+
+  // Before anything is drawn: a locked app must not flash its sidebar on the
+  // way to the PIN prompt.
+  const lockState = await window.api.lockState();
+  hasPin = lockState.hasPin;
+  if (lockState.locked) showLockScreen(true);
+
+  setExtensionActions(await window.api.extensionActions());
+
   installations = await window.api.listInstallations();
   renderApp();
 

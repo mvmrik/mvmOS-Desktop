@@ -18,25 +18,39 @@ const {
   BrowserWindow,
   Menu,
   WebContentsView,
+  dialog,
   ipcMain,
   nativeImage,
   screen,
+  session: electronSession,
   shell,
 } = require("electron");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, randomBytes, scryptSync, timingSafeEqual } = require("node:crypto");
 
 const store = require("./store");
 const favicon = require("./favicon");
+const extensions = require("./extensions");
+const cookies = require("./cookies");
 const { checkForUpdate } = require("./update");
 const { normalizeAddress, originOf, sameSite, isReachable, upgradeScheme } = require("./net");
 
 const SIDEBAR_WIDTH = 260;
 const DEFAULT_BOUNDS = { width: 1280, height: 800 };
+const BASE_TITLE = "mvmOS Desktop";
+// The popup an extension button opens, in device-independent pixels like every
+// other bound here.
+// A popup is measured by what it draws, and a page can only report a size at
+// least as big as the view it is in - so it starts smaller than any real popup
+// and is shown once it has grown into itself.
+const POPUP_START = { width: 240, height: 120 };
+const POPUP_DEFAULT = { width: 360, height: 480 };
+const POPUP_MAX = { width: 800, height: 600 };
 
 let win = null;
 let installations = [];
 let session = {};
+let settings = { pin: null, extensions: [] };
 
 /** tabId -> { view, info, origin, url, visible } */
 const tabs = new Map();
@@ -45,11 +59,21 @@ let sidebarVisible = true;
 // Raised while the chrome shows a dialog of its own: the tab is hidden so the
 // dialog is centred on the whole window instead of being clipped by the strip.
 let overlayOpen = false;
+// While locked nothing at all is shown: the tab views are hidden here and the
+// chrome renderer covers the sidebar with the PIN prompt.
+let locked = false;
+
+/** What the toolbar draws, refreshed whenever an extension loads or goes. */
+let extensionActions = [];
+/** The open popup: { id, view, anchor, shown } - at most one, as in a browser. */
+let extensionPopup = null;
 
 /* ------------------------------------------------------------------ layout */
 
 function contentBounds() {
   const { width, height } = win.getContentBounds();
+  // The extension buttons live in the sidebar, so the page still owns
+  // everything to the right of it.
   const x = sidebarVisible ? SIDEBAR_WIDTH : 0;
   return { x, y: 0, width: Math.max(width - x, 0), height };
 }
@@ -72,9 +96,12 @@ function setViewVisible(tab, visible) {
 
 function applyLayout() {
   if (!win || win.isDestroyed()) return;
+  // Anything that relays the views - a resize, a tab switch, the sidebar, the
+  // lock - has moved the button the popup was pinned to, so it goes.
+  closeExtensionPopup();
   const bounds = contentBounds();
   for (const [id, tab] of tabs) {
-    const shouldShow = id === activeTabId && !overlayOpen;
+    const shouldShow = id === activeTabId && !overlayOpen && !locked;
     if (shouldShow) tab.view.setBounds(bounds);
     setViewVisible(tab, shouldShow);
   }
@@ -87,6 +114,180 @@ function setSidebarVisible(visible) {
   if (win && !win.isDestroyed()) {
     win.webContents.send("sidebar:changed", sidebarVisible);
   }
+}
+
+/* ------------------------------------------------------- extension toolbar */
+
+/*
+ * Electron loads extensions but draws none of their UI, so the toolbar is the
+ * chrome renderer's and the popup is a `WebContentsView` we put over the page
+ * the way a browser hangs one under its button. Only one is ever open, it is
+ * dismissed by anything that would take focus away, and it is sized by what
+ * the page inside it reports.
+ */
+
+function popupHost() {
+  return extensionPopup ? extensionPopup.view.webContents : null;
+}
+
+function closeExtensionPopup() {
+  if (!extensionPopup) return;
+  const { view, settle } = extensionPopup;
+  extensionPopup = null;
+  clearTimeout(settle);
+  if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
+  if (!view.webContents.isDestroyed()) view.webContents.close();
+  if (win && !win.isDestroyed()) win.webContents.send("extensions:popup-closed");
+}
+
+/*
+ * The button is in the sidebar, so the popup opens beside it rather than under
+ * it: level with the button, just past the sidebar's edge, over the page. That
+ * keeps the tab list the user clicked from in view, and a popup taller than
+ * the room below it is pulled up rather than cut off. Anchor is the button's
+ * rectangle in the renderer's own coordinates, which are the window's content
+ * coordinates too.
+ */
+function placeExtensionPopup(anchor, size) {
+  if (!win || win.isDestroyed() || !extensionPopup) return;
+  const content = win.getContentBounds();
+  const left = (sidebarVisible ? SIDEBAR_WIDTH : 0) + 4;
+  const available = Math.max(content.width - left - 8, 160);
+  const width = Math.min(Math.max(Math.round(size.width), 160), POPUP_MAX.width, available);
+  const height = Math.min(Math.max(Math.round(size.height), 80), POPUP_MAX.height, Math.max(content.height - 16, 80));
+  const x = Math.max(left, Math.min(anchor.x + anchor.width + 4, content.width - width - 8));
+  const y = Math.max(8, Math.min(anchor.y, content.height - height - 8));
+  extensionPopup.view.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
+}
+
+/** First measurement in, or none coming: put it where it belongs and show it. */
+function revealExtensionPopup(size) {
+  if (!extensionPopup || extensionPopup.shown) return;
+  extensionPopup.shown = true;
+  placeExtensionPopup(extensionPopup.anchor, size);
+  const { view } = extensionPopup;
+  if (typeof view.setVisible === "function") view.setVisible(true);
+  view.webContents.focus();
+  // Whatever the popup drew while it was hidden has not been measured yet.
+  const remeasure = () => {
+    if (!view.webContents.isDestroyed()) view.webContents.send("extension-popup:measure");
+  };
+  remeasure();
+  setTimeout(remeasure, 400);
+}
+
+function openExtensionPopup(id, anchor) {
+  const action = extensionActions.find((item) => item.id === id);
+  closeExtensionPopup();
+  if (!action || !action.popupUrl || !win || win.isDestroyed()) return false;
+
+  const view = new WebContentsView({
+    webPreferences: {
+      session: electronSession.defaultSession,
+      // The popup is an extension page, so it needs the extension world rather
+      // than an isolated one; the preload only corrects what Electron gets
+      // wrong about tabs and reports the size back.
+      preload: path.join(__dirname, "extension-popup-preload.js"),
+      contextIsolation: false,
+      sandbox: false,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+  view.setBackgroundColor("#ffffff");
+  extensionPopup = { id, view, anchor, shown: false };
+  win.contentView.addChildView(view);
+  if (typeof view.setVisible === "function") view.setVisible(false);
+  placeExtensionPopup(anchor, POPUP_START);
+  // The popup's first act is usually to ask its background worker something,
+  // and a stopped worker never answers.
+  extensions.wake(electronSession.defaultSession);
+  view.webContents.loadURL(action.popupUrl);
+
+  // An extension page that never reports - one that fails to load, or whose
+  // popup is an empty shell - still has to appear, or the click did nothing.
+  const fallback = setTimeout(() => revealExtensionPopup(POPUP_DEFAULT), 700);
+  view.webContents.once("destroyed", () => clearTimeout(fallback));
+  extensionPopup.settle = fallback;
+
+  // Clicking the page, the sidebar or another window is how a popup is
+  // dismissed everywhere else.
+  view.webContents.on("blur", () => {
+    if (extensionPopup && extensionPopup.view === view) closeExtensionPopup();
+  });
+  // Links out of a popup ("open my vault") belong in a real window.
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    closeExtensionPopup();
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+  return true;
+}
+
+/*
+ * The options page is a normal extension page, so it can simply be a tab -
+ * which is where an extension's own settings belong anyway.
+ */
+function optionsUrlOf(id) {
+  const extension = electronSession.defaultSession.extensions
+    .getAllExtensions()
+    .find((item) => item.id === id);
+  if (!extension) return null;
+  const manifest = extension.manifest || {};
+  const page = manifest.options_page || (manifest.options_ui && manifest.options_ui.page);
+  return page ? new URL(page, extension.url).href : null;
+}
+
+/*
+ * An options page is a whole page of its own and belongs to no installation,
+ * so it gets a plain window rather than a tab in the sidebar's tree.
+ */
+function openExtensionPage(url, title) {
+  const page = new BrowserWindow({
+    width: 900,
+    height: 700,
+    parent: win || undefined,
+    title,
+    backgroundColor: "#ffffff",
+    webPreferences: { session: electronSession.defaultSession, backgroundThrottling: false },
+  });
+  page.setMenuBarVisibility(false);
+  page.loadURL(url);
+  return page;
+}
+
+/*
+ * Content scripts are injected as a page loads, so an extension added while
+ * tabs are open does nothing in them until they come round again.
+ */
+function reloadTabsForExtensions() {
+  for (const tab of tabs.values()) {
+    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.reload();
+  }
+}
+
+let wakeTimer = null;
+
+/*
+ * Chromium idles a background worker out after about half a minute, and
+ * nothing here starts it again on demand - so it is kept up while extensions
+ * are loaded, and left alone entirely when none are.
+ */
+function keepExtensionWorkersAwake() {
+  if (wakeTimer) clearInterval(wakeTimer);
+  wakeTimer = null;
+  if (!settings.extensions.length) return;
+  extensions.wake(electronSession.defaultSession);
+  wakeTimer = setInterval(() => extensions.wake(electronSession.defaultSession), 20000);
+}
+
+function refreshExtensionActions() {
+  extensionActions = extensions.actions(settings.extensions);
+  keepExtensionWorkersAwake();
+  if (extensionPopup && !extensionActions.some((item) => item.id === extensionPopup.id)) {
+    closeExtensionPopup();
+  }
+  if (win && !win.isDestroyed()) win.webContents.send("extensions:actions", extensionActions);
 }
 
 /* ----------------------------------------------------------------- session */
@@ -238,7 +439,15 @@ function createTab({ installationId, kind, parentId, url, id }) {
   const tabId = id || randomUUID();
 
   const view = new WebContentsView({
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // A hidden tab is still a live page: a chat that is not on screen has to
+      // keep its socket open, or its notification arrives whenever the user
+      // happens to look at it rather than when it was sent.
+      backgroundThrottling: false,
+    },
   });
   view.setBackgroundColor("#1e1f22");
 
@@ -414,21 +623,101 @@ function restoreSessionTabs() {
 
 /* ----------------------------------------------------------------- badging */
 
+let lastBadgeCount = 0;
+
 /*
  * A tab whose page reports unread items puts the total on the app's own icon.
  * macOS and the Linux desktops that implement the Unity protocol take a plain
  * number; Windows wants a picture, which the chrome renderer draws for us,
  * since only it has a canvas to draw on.
+ *
+ * Not every Linux panel implements the Unity protocol, and the ones that do
+ * only look up the badge by the .desktop file the app was launched from - so a
+ * build started from a terminal has no icon to draw on at all. Two things work
+ * everywhere instead, and both are done alongside the badge: the count goes in
+ * front of the window title, which every task list shows, and the taskbar entry
+ * is flashed when the count goes up while the window is not the one in front.
  */
 function applyBadge(count, overlayDataUrl) {
   if (!app.isReady()) return;
-  if (process.platform === "win32") {
-    if (!win || win.isDestroyed()) return;
-    const image = count > 0 && overlayDataUrl ? nativeImage.createFromDataURL(overlayDataUrl) : null;
-    win.setOverlayIcon(image, count > 0 ? `${count} unread` : "");
+  const total = count > 0 ? count : 0;
+
+  if (process.platform === "win32" && win && !win.isDestroyed()) {
+    const image = total > 0 && overlayDataUrl ? nativeImage.createFromDataURL(overlayDataUrl) : null;
+    win.setOverlayIcon(image, total > 0 ? `${total} unread` : "");
+  } else {
+    app.setBadgeCount(total);
+  }
+
+  if (win && !win.isDestroyed()) {
+    win.setTitle(total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE);
+    if (total > lastBadgeCount && !win.isFocused()) win.flashFrame(true);
+  }
+  lastBadgeCount = total;
+}
+
+/* -------------------------------------------------------------- fullscreen */
+
+// Restored when full screen is left again, so a window that was maximised when
+// F11 was pressed does not come back as a small floating one.
+let wasMaximizedBeforeFullScreen = false;
+
+/*
+ * GTK reports the new size late - and, for a window that was maximised when it
+ * was fullscreened, sometimes not at all - which leaves the page drawn at its
+ * old size in the corner of an otherwise black screen. Asking for the size of
+ * the display the window is on, and pushing it onto the window when the two
+ * disagree, is what makes F11 land on Linux.
+ */
+function syncFullScreenSize() {
+  if (!win || win.isDestroyed()) return;
+  applyLayout();
+  if (process.platform !== "linux" || !win.isFullScreen()) return;
+  const target = screen.getDisplayMatching(win.getBounds()).bounds;
+  const content = win.getContentBounds();
+  if (content.width !== target.width || content.height !== target.height) {
+    win.setBounds(target);
+  }
+}
+
+function toggleFullScreen() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isFullScreen()) {
+    win.setFullScreen(false);
+    if (wasMaximizedBeforeFullScreen) win.maximize();
+    wasMaximizedBeforeFullScreen = false;
     return;
   }
-  app.setBadgeCount(count > 0 ? count : 0);
+  wasMaximizedBeforeFullScreen = win.isMaximized();
+  // A maximised GTK window fullscreened in place keeps the maximised geometry;
+  // dropping out of maximised first is what lets the WM resize it properly.
+  if (wasMaximizedBeforeFullScreen) {
+    win.unmaximize();
+    setTimeout(() => {
+      if (win && !win.isDestroyed()) win.setFullScreen(true);
+    }, 30);
+    return;
+  }
+  win.setFullScreen(true);
+}
+
+/* -------------------------------------------------------------------- lock */
+
+function hashPin(pin, salt) {
+  return scryptSync(String(pin), salt, 32).toString("hex");
+}
+
+function pinMatches(pin) {
+  if (!settings.pin) return true;
+  const expected = Buffer.from(settings.pin.hash, "hex");
+  const actual = Buffer.from(hashPin(pin, settings.pin.salt), "hex");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function setLocked(value) {
+  locked = Boolean(value) && Boolean(settings.pin);
+  applyLayout();
+  if (win && !win.isDestroyed()) win.webContents.send("lock:changed", locked);
 }
 
 /* ------------------------------------------------------------------ window */
@@ -441,6 +730,16 @@ function buildMenu() {
       label: "File",
       submenu: [
         { label: "Add installation…", accelerator: "CmdOrCtrl+N", click: () => win.webContents.send("menu:add-installation") },
+        { type: "separator" },
+        { label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => win.webContents.send("menu:settings") },
+        {
+          label: "Lock now",
+          accelerator: "CmdOrCtrl+L",
+          click: () => {
+            if (settings.pin) setLocked(true);
+            else win.webContents.send("menu:settings");
+          },
+        },
         { type: "separator" },
         isMac ? { role: "close" } : { role: "quit" },
       ],
@@ -475,7 +774,13 @@ function buildMenu() {
         { role: "resetZoom" },
         { role: "zoomIn" },
         { role: "zoomOut" },
-        { role: "togglefullscreen" },
+        {
+          // Not role: "togglefullscreen" - entering full screen needs a little
+          // help on Linux, see toggleFullScreen().
+          label: "Toggle full screen",
+          accelerator: isMac ? "Ctrl+Cmd+F" : "F11",
+          click: () => toggleFullScreen(),
+        },
       ],
     },
     { role: "windowMenu" },
@@ -537,10 +842,25 @@ function createWindow() {
   // chrome starts out assuming it is visible.
   win.webContents.on("did-finish-load", () => {
     win.webContents.send("sidebar:changed", sidebarVisible);
+    win.webContents.send("extensions:actions", extensionActions);
   });
+  // The chrome page has a fixed title; the badge count is what changes it, so
+  // the page is not allowed to overwrite it back.
+  win.on("page-title-updated", (event) => event.preventDefault());
+  win.setTitle(BASE_TITLE);
+
   win.on("resize", applyLayout);
   win.on("resize", persistSession);
   win.on("move", persistSession);
+  win.on("enter-full-screen", () => {
+    syncFullScreenSize();
+    setTimeout(syncFullScreenSize, 150);
+  });
+  win.on("leave-full-screen", () => {
+    applyLayout();
+    setTimeout(applyLayout, 150);
+  });
+  win.on("focus", () => win.flashFrame(false));
   win.on("maximize", persistSession);
   win.on("unmaximize", persistSession);
   win.on("close", () => {
@@ -548,6 +868,7 @@ function createWindow() {
     sessionFrozen = true;
   });
   win.on("closed", () => {
+    extensionPopup = null;
     win = null;
     tabs.clear();
     activeTabId = null;
@@ -668,6 +989,24 @@ ipcMain.handle("tabs:close", (_event, tabId) => {
   closeTabTree(tabId);
 });
 
+/*
+ * The sidebar owns the order tabs are shown in; the map here owns the order
+ * they are written to the session file in, so the two have to be told to agree
+ * whenever the user moves one.
+ */
+ipcMain.handle("tabs:reorder", (_event, orderedIds) => {
+  const remaining = new Map(tabs);
+  const reordered = [];
+  for (const id of orderedIds) {
+    if (!remaining.has(id)) continue;
+    reordered.push([id, remaining.get(id)]);
+    remaining.delete(id);
+  }
+  tabs.clear();
+  for (const [id, tab] of [...reordered, ...remaining]) tabs.set(id, tab);
+  persistSession();
+});
+
 ipcMain.handle("session:restore", () => restoreSessionTabs());
 
 ipcMain.handle("chrome:overlay", (_event, open) => {
@@ -681,14 +1020,250 @@ ipcMain.handle("chrome:badge", (_event, { count, overlay }) => applyBadge(Number
 
 ipcMain.handle("update:check", () => runUpdateCheck(true));
 
+/* ----------------------------------------------------------- ipc: settings */
+
+ipcMain.handle("lock:state", () => ({ locked, hasPin: Boolean(settings.pin) }));
+
+ipcMain.handle("lock:unlock", (_event, pin) => {
+  if (!settings.pin) {
+    setLocked(false);
+    return true;
+  }
+  if (!pinMatches(pin)) return false;
+  setLocked(false);
+  return true;
+});
+
+ipcMain.handle("lock:lock", () => setLocked(true));
+
+ipcMain.handle("pin:set", (_event, { currentPin, pin }) => {
+  if (settings.pin && !pinMatches(currentPin)) throw new Error("The current PIN is not correct.");
+  const digits = String(pin || "").trim();
+  if (!/^\d{4,12}$/.test(digits)) throw new Error("A PIN is 4 to 12 digits.");
+  const salt = randomBytes(16).toString("hex");
+  settings.pin = { salt, hash: hashPin(digits, salt) };
+  store.saveSettings(settings);
+  return { hasPin: true };
+});
+
+ipcMain.handle("pin:clear", (_event, currentPin) => {
+  if (settings.pin && !pinMatches(currentPin)) throw new Error("The current PIN is not correct.");
+  settings.pin = null;
+  store.saveSettings(settings);
+  setLocked(false);
+  return { hasPin: false };
+});
+
+function extensionList() {
+  return extensions.list(settings.extensions, app.getPath("userData"));
+}
+
+ipcMain.handle("extensions:list", () => extensionList());
+
+/*
+ * An extension already on disk can be pointed at directly; a download is
+ * unpacked into the user data directory first, because Chromium loads folders
+ * and nothing else.
+ */
+ipcMain.handle("extensions:add", async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: "Add a Chrome extension",
+    message: "Pick an unpacked extension folder, or a .zip / .crx you downloaded.",
+    properties: process.platform === "darwin" ? ["openDirectory", "openFile"] : ["openFile"],
+    filters: [{ name: "Extension archive", extensions: ["zip", "crx"] }, { name: "All files", extensions: ["*"] }],
+    buttonLabel: "Add",
+  });
+  if (result.canceled || !result.filePaths.length) return { list: extensionList() };
+
+  let dir;
+  try {
+    dir = extensions.install(result.filePaths[0], app.getPath("userData"));
+  } catch (error) {
+    return { list: extensionList(), message: error.message };
+  }
+
+  if (!settings.extensions.includes(dir)) {
+    const loadResult = await extensions.loadOne(electronSession.defaultSession, dir);
+    settings.extensions.push(dir);
+    store.saveSettings(settings);
+    refreshExtensionActions();
+    if (!loadResult.ok) return { list: extensionList(), message: loadResult.message };
+    // Content scripts only reach pages loaded after the extension was; without
+    // this the user has to reload every open tab by hand to see it work.
+    reloadTabsForExtensions();
+  }
+  return { list: extensionList() };
+});
+
+/*
+ * The folder dialog is a separate button on Linux and Windows: GTK and the
+ * Windows common dialog each pick one mode, so asking for both in one dialog
+ * silently drops the other.
+ */
+ipcMain.handle("extensions:add-folder", async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: "Choose an unpacked extension folder",
+    message: "Pick the folder that contains the extension's manifest.json.",
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return { list: extensionList() };
+  const dir = result.filePaths[0];
+  if (!settings.extensions.includes(dir)) {
+    const loadResult = await extensions.loadOne(electronSession.defaultSession, dir);
+    settings.extensions.push(dir);
+    store.saveSettings(settings);
+    refreshExtensionActions();
+    if (!loadResult.ok) return { list: extensionList(), message: loadResult.message };
+    reloadTabsForExtensions();
+  }
+  return { list: extensionList() };
+});
+
+ipcMain.handle("extensions:remove", (_event, dir) => {
+  extensions.unload(electronSession.defaultSession, dir);
+  settings.extensions = settings.extensions.filter((p) => p !== dir);
+  store.saveSettings(settings);
+  // Only folders we unpacked ourselves are ours to delete; one the user picked
+  // stays exactly where they put it.
+  extensions.forget(dir, app.getPath("userData"));
+  refreshExtensionActions();
+  return { list: extensionList() };
+});
+
+/* -------------------------------------------------- ipc: extension toolbar */
+
+ipcMain.handle("extensions:actions", () => extensionActions);
+
+ipcMain.handle("extensions:popup", (_event, { id, anchor, toggle }) => {
+  if (locked) return false;
+  const same = extensionPopup && extensionPopup.id === id;
+  if (same && toggle !== false) {
+    closeExtensionPopup();
+    return false;
+  }
+  const action = extensionActions.find((item) => item.id === id);
+  if (action && action.popupUrl) return openExtensionPopup(id, anchor);
+
+  // No popup declared: the options page is the only thing left worth opening,
+  // and an extension with neither is one whose button is a status light.
+  const options = optionsUrlOf(id);
+  if (options) {
+    openExtensionPage(options, action ? action.name : "Extension");
+    return true;
+  }
+  return false;
+});
+
+ipcMain.handle("extensions:popup-close", () => closeExtensionPopup());
+
+ipcMain.handle("extensions:menu", (_event, id) => {
+  const action = extensionActions.find((item) => item.id === id);
+  if (!action) return;
+  const options = optionsUrlOf(id);
+  const dir = settings.extensions.find((p) => {
+    const listed = extensionList().find((item) => item.path === p);
+    return listed && listed.id === id;
+  });
+  Menu.buildFromTemplate([
+    { label: action.name, enabled: false },
+    { type: "separator" },
+    {
+      label: "Options",
+      enabled: Boolean(options),
+      click: () => openExtensionPage(options, action.name),
+    },
+    {
+      label: "Remove extension",
+      enabled: Boolean(dir),
+      click: () => {
+        extensions.unload(electronSession.defaultSession, dir);
+        settings.extensions = settings.extensions.filter((p) => p !== dir);
+        store.saveSettings(settings);
+        extensions.forget(dir, app.getPath("userData"));
+        refreshExtensionActions();
+      },
+    },
+  ]).popup({ window: win });
+});
+
+/*
+ * From the popup preload: which tab the user is actually looking at. Electron
+ * counts the popup itself as a tab and calls it active because it has focus,
+ * which is the one thing an extension must not believe.
+ */
+ipcMain.handle("extension-popup:active-tab", () => {
+  const tab = activeTabId ? tabs.get(activeTabId) : null;
+  return tab && !tab.view.webContents.isDestroyed() ? tab.view.webContents.id : -1;
+});
+
+ipcMain.on("extension-popup:size", (event, size) => {
+  const host = popupHost();
+  if (!host || event.sender !== host || !extensionPopup) return;
+  if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) return;
+  if (!extensionPopup.shown) {
+    clearTimeout(extensionPopup.settle);
+    revealExtensionPopup(size);
+    return;
+  }
+  placeExtensionPopup(extensionPopup.anchor, size);
+});
+
+ipcMain.on("extension-popup:close", (event) => {
+  const host = popupHost();
+  if (host && event.sender === host) closeExtensionPopup();
+});
+
 ipcMain.handle("shell:open-external", (_event, url) => shell.openExternal(url));
 
 /* -------------------------------------------------------------------- boot */
 
-app.whenReady().then(() => {
+// What the Linux panels that implement the Unity badge protocol look the app up
+// by: it has to match the installed .desktop file, which electron-builder names
+// after the executable rather than after the product. The app's own name is
+// deliberately left alone - it is what the user data directory is named after.
+if (process.platform === "linux") app.desktopName = "mvmos-desktop.desktop";
+
+/*
+ * A page only gets what a browser would grant it without a prompt being useful:
+ * these are sites the user added themselves, and there is no permission UI in
+ * this app to ask through. Location and raw device access are not on the list.
+ */
+const GRANTED_PERMISSIONS = new Set([
+  "notifications",
+  "clipboard-read",
+  "clipboard-sanitized-write",
+  "fullscreen",
+  "pointerLock",
+  "media",
+  "audioCapture",
+  "videoCapture",
+  "background-sync",
+  "midi",
+  "midiSysex",
+]);
+
+app.whenReady().then(async () => {
   installations = store.load();
   session = store.loadSession();
+  settings = store.loadSettings();
   sidebarVisible = session.sidebarVisible !== false;
+  // A PIN means the app starts covered; nothing is shown until it is entered.
+  locked = Boolean(settings.pin);
+
+  const defaultSession = electronSession.defaultSession;
+  defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(GRANTED_PERMISSIONS.has(permission));
+  });
+  defaultSession.setPermissionCheckHandler((_wc, permission) => GRANTED_PERMISSIONS.has(permission));
+
+  // Both have to be done before the first page loads: a cookie put back after
+  // the page asked for it is a login the user still had to repeat.
+  await cookies.restore(defaultSession);
+  await extensions.loadAll(defaultSession, settings.extensions);
+
+  extensionActions = extensions.actions(settings.extensions);
+  keepExtensionWorkersAwake();
+
   buildMenu();
   createWindow();
 
@@ -703,7 +1278,21 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", persistSessionNow);
+/*
+ * Quitting waits for one thing: the session cookies being written out. Without
+ * it the app comes back logged out of everything, which is the one part of a
+ * restored session Chromium does not restore by itself.
+ */
+let cookiesSaved = false;
+app.on("before-quit", (event) => {
+  persistSessionNow();
+  if (cookiesSaved) return;
+  event.preventDefault();
+  cookies.save(electronSession.defaultSession).finally(() => {
+    cookiesSaved = true;
+    app.quit();
+  });
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

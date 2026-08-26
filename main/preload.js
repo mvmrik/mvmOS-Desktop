@@ -27,7 +27,24 @@ contextBridge.exposeInMainWorld("api", {
   openTab: (payload) => ipcRenderer.invoke("tabs:open", payload),
   activateTab: (tabId) => ipcRenderer.invoke("tabs:activate", tabId),
   closeTab: (tabId) => ipcRenderer.invoke("tabs:close", tabId),
+  reorderTabs: (orderedIds) => ipcRenderer.invoke("tabs:reorder", orderedIds),
   restoreSession: () => ipcRenderer.invoke("session:restore"),
+
+  lockState: () => ipcRenderer.invoke("lock:state"),
+  unlock: (pin) => ipcRenderer.invoke("lock:unlock", pin),
+  lockNow: () => ipcRenderer.invoke("lock:lock"),
+  setPin: (currentPin, pin) => ipcRenderer.invoke("pin:set", { currentPin, pin }),
+  clearPin: (currentPin) => ipcRenderer.invoke("pin:clear", currentPin),
+
+  listExtensions: () => ipcRenderer.invoke("extensions:list"),
+  addExtension: () => ipcRenderer.invoke("extensions:add"),
+  addExtensionFolder: () => ipcRenderer.invoke("extensions:add-folder"),
+  removeExtension: (dir) => ipcRenderer.invoke("extensions:remove", dir),
+
+  extensionActions: () => ipcRenderer.invoke("extensions:actions"),
+  openExtensionPopup: (id, anchor) => ipcRenderer.invoke("extensions:popup", { id, anchor }),
+  closeExtensionPopup: () => ipcRenderer.invoke("extensions:popup-close"),
+  extensionMenu: (id) => ipcRenderer.invoke("extensions:menu", id),
 
   setOverlay: (open) => ipcRenderer.invoke("chrome:overlay", open),
   setSidebarVisible: (visible) => ipcRenderer.invoke("chrome:sidebar", visible),
@@ -44,6 +61,10 @@ contextBridge.exposeInMainWorld("api", {
   onInstallationAddress: (handler) => on("installation:address", handler),
   onSidebarChanged: (handler) => on("sidebar:changed", handler),
   onAddInstallationRequested: (handler) => on("menu:add-installation", handler),
+  onSettingsRequested: (handler) => on("menu:settings", handler),
+  onLockChanged: (handler) => on("lock:changed", handler),
+  onExtensionActions: (handler) => on("extensions:actions", handler),
+  onExtensionPopupClosed: (handler) => on("extensions:popup-closed", handler),
   onUpdateAvailable: (handler) => on("update:available", handler),
   onUpdateNone: (handler) => on("update:none", handler),
 });

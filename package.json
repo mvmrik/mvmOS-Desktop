@@ -1,7 +1,7 @@
 {
   "name": "mvmos-desktop",
   "productName": "mvmOS Desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Desktop client for managing and using your mvmOS installations.",
   "homepage": "https://mvmos.org",
   "desktopName": "mvmos-desktop.desktop",

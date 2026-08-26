@@ -49,6 +49,13 @@
             <button id="hide-sidebar-btn" class="icon-btn" title="Hide sidebar (Ctrl/Cmd+B)">‹</button>
           </div>
         </div>
+        <!--
+          The strip the extension buttons live in, above the tab list the way a
+          browser puts its toolbar above its tabs. A popup opened from a button
+          here hangs over the page beside it.
+        -->
+        <div id="extension-bar" class="extension-bar hidden"></div>
+
         <div id="installation-list" class="installation-list"></div>
 
         <!-- Only ever shown once the release check has found a newer version. -->
@@ -95,10 +102,61 @@
           <p class="form-hint" id="modal-type-hint"></p>
           <p class="form-error hidden" id="modal-error"></p>
           <div class="modal-actions">
+            <!-- Only while editing: a website row in the sidebar is one line
+                 with no room for a remove button of its own. -->
+            <button type="button" id="modal-remove-btn" class="danger-outline hidden">Remove</button>
+            <span class="modal-actions-spacer"></span>
             <button type="button" id="modal-cancel-btn" class="secondary">Cancel</button>
             <button type="submit" id="modal-submit-btn">Add</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Everything that is neither an installation nor a tab. -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-card settings-card">
+        <h2>Settings</h2>
+
+        <section class="settings-section">
+          <h3>Lock with a PIN</h3>
+          <p class="form-hint" id="pin-status"></p>
+          <form id="pin-form" class="installation-form">
+            <label id="pin-current-label" class="hidden">
+              Current PIN
+              <input id="pin-current" type="password" inputmode="numeric" autocomplete="off" />
+            </label>
+            <label>
+              <span id="pin-new-label">New PIN</span>
+              <input id="pin-new" type="password" inputmode="numeric" autocomplete="off" placeholder="4 to 12 digits" />
+            </label>
+            <p class="form-error hidden" id="pin-error"></p>
+            <div class="settings-actions">
+              <button type="submit" id="pin-save-btn">Set PIN</button>
+              <button type="button" id="pin-remove-btn" class="secondary hidden">Remove PIN</button>
+              <button type="button" id="pin-lock-btn" class="secondary hidden">Lock now</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="settings-section">
+          <h3>Chrome extensions</h3>
+          <p class="form-hint">
+            Add a .zip or .crx and it is unpacked for you, or point at a folder
+            that already holds a manifest.json. Loaded extensions get a button
+            in the sidebar above your tabs, popup and all.
+          </p>
+          <div id="extension-list" class="extension-list"></div>
+          <div class="settings-actions">
+            <button type="button" id="extension-add-btn" class="secondary">Add from file…</button>
+            <button type="button" id="extension-folder-btn" class="secondary">Add from folder…</button>
+          </div>
+          <p class="form-hint" id="extension-note"></p>
+        </section>
+
+        <div class="modal-actions">
+          <button type="button" id="settings-close-btn" class="secondary">Close</button>
+        </div>
       </div>
     </div>
 
@@ -116,6 +174,20 @@
           <button type="button" id="confirm-ok-btn" class="danger">Remove</button>
         </div>
       </div>
+    </div>
+    <!--
+      The lock screen covers the whole window, sidebar included; the tab views
+      themselves are hidden in the main process, so a locked app shows nothing
+      of what is open behind it.
+    -->
+    <div id="lock-screen" class="lock-screen hidden">
+      <form id="lock-form" class="lock-card">
+        <div class="lock-mark">mvmOS</div>
+        <p class="lock-title">Locked</p>
+        <input id="lock-pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN" />
+        <p class="form-error hidden" id="lock-error">Wrong PIN.</p>
+        <button type="submit">Unlock</button>
+      </form>
     </div>
   </body>
 </html>

@@ -4,6 +4,8 @@
 // the same shape the Tauri build used, so an existing file is picked up as is.
 // What was open last time is kept apart from them, in session.json, so a
 // corrupted session can never cost the user their list of installations.
+// Preferences that are neither - the lock PIN, the loaded extensions - live in
+// settings.json for the same reason.
 
 const { app } = require("electron");
 const fs = require("node:fs");
@@ -61,4 +63,26 @@ function saveSession(session) {
   writeJson("session.json", session);
 }
 
-module.exports = { load, save, loadSession, saveSession };
+/**
+ * { pin: { salt, hash } | null, extensions: [absolute paths] } - a file written
+ * by an older version simply has fewer of them.
+ */
+function loadSettings() {
+  const parsed = readJson("settings.json");
+  if (!parsed || typeof parsed !== "object") return { pin: null, extensions: [] };
+  const pin = parsed.pin;
+  return {
+    pin: pin && typeof pin.salt === "string" && typeof pin.hash === "string"
+      ? { salt: pin.salt, hash: pin.hash }
+      : null,
+    extensions: Array.isArray(parsed.extensions)
+      ? parsed.extensions.filter((p) => typeof p === "string" && p)
+      : [],
+  };
+}
+
+function saveSettings(settings) {
+  writeJson("settings.json", settings);
+}
+
+module.exports = { load, save, loadSession, saveSession, loadSettings, saveSettings };

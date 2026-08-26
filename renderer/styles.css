@@ -182,6 +182,53 @@ button {
   background: var(--bg);
 }
 
+/* Sits between the sidebar header and the tab list, so it scrolls with
+   neither: the buttons stay put however long the list gets. */
+.extension-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px 10px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.extension-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.extension-btn:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.extension-btn.open {
+  background: var(--accent);
+  color: #10131a;
+}
+
+.extension-btn img {
+  width: 19px;
+  height: 19px;
+  object-fit: contain;
+  /* A popup is open behind an icon that keeps its own colours. */
+  pointer-events: none;
+}
+
 .status-card {
   max-width: 420px;
   display: flex;
@@ -247,6 +294,12 @@ button {
 .installation-header:hover .icon-btn.subtle,
 .tab-row:hover .icon-btn.subtle {
   visibility: visible;
+}
+
+/* A row's own buttons take the click; the row underneath them must not. */
+.tab-row .icon-btn.subtle,
+.installation-header .icon-btn.subtle {
+  flex-shrink: 0;
 }
 
 .icon-btn.subtle:hover {
@@ -329,6 +382,18 @@ button {
   user-select: none;
 }
 
+/* An mvmOS app is identified by the emoji in front of its title, so that is
+   what the row shows instead of the installation-wide favicon. */
+.emoji-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  line-height: 16px;
+  text-align: center;
+  user-select: none;
+}
+
 .tab-row.active .site-icon-fallback {
   background: rgba(255, 255, 255, 0.2);
   border-color: transparent;
@@ -370,6 +435,36 @@ button {
   color: var(--accent);
 }
 
+/* Groups */
+
+.group-chevron {
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-align: center;
+  transition: transform 0.12s ease;
+}
+
+.installation-block.collapsed .group-chevron {
+  transform: rotate(-90deg);
+}
+
+.group-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.installation-block.collapsed .tab-tree {
+  display: none;
+}
+
 /* Tabs */
 
 .tab-tree {
@@ -400,12 +495,16 @@ button {
   color: #fff;
 }
 
+.tab-row {
+  cursor: pointer;
+}
+
 .tab-label {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: default;
   user-select: none;
 }
 
@@ -509,9 +608,25 @@ button {
 
 .modal-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+.modal-actions-spacer {
+  flex: 1;
+}
+
+.modal-actions button.danger-outline {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+.modal-actions button.danger-outline:hover {
+  background: var(--danger);
+  color: #fff;
 }
 
 .modal-actions button {
@@ -549,4 +664,177 @@ button {
 
 .modal-actions button.danger:hover {
   filter: brightness(1.1);
+}
+
+/* Settings */
+
+.settings-card {
+  width: 460px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.settings-section {
+  padding: 0 0 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+/* The hint sits directly above the first field, so give the form room. */
+.settings-section .form-hint {
+  margin: 0 0 12px;
+}
+
+.settings-section .installation-form {
+  gap: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.settings-actions button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-actions button:hover {
+  background: var(--accent-hover);
+}
+
+.settings-actions button.secondary {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
+
+.settings-actions button.secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.extension-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.extension-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.extension-row .icon-btn.subtle {
+  visibility: visible;
+}
+
+.extension-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.extension-text strong {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.extension-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extension-error {
+  color: var(--danger);
+}
+
+/* Lock screen. Above every other overlay, and opaque: a locked window shows
+   nothing of what is open behind it. */
+
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.lock-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 260px;
+  text-align: center;
+}
+
+.lock-mark {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.lock-title {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.lock-card input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 18px;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+.lock-card input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.lock-card button {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lock-card button:hover {
+  background: var(--accent-hover);
 }
