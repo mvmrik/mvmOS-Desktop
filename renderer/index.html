@@ -46,6 +46,14 @@
           <span class="brand">mvmOS Desktop</span>
           <div class="sidebar-header-actions">
             <button id="add-installation-btn" class="icon-btn" title="Add installation">+</button>
+            <!-- Locking is otherwise buried in the settings dialog, which is the
+                 wrong place for the one thing you want to reach in a hurry. -->
+            <button id="lock-now-btn" class="icon-btn" title="Lock now">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5" />
+                <rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5" />
+              </svg>
+            </button>
             <button id="hide-sidebar-btn" class="icon-btn" title="Hide sidebar (Ctrl/Cmd+B)">‹</button>
           </div>
         </div>
@@ -68,6 +76,16 @@
             <button type="button" id="update-download-btn">Download</button>
             <button type="button" id="update-dismiss-btn" class="icon-btn" title="Dismiss">×</button>
           </div>
+        </div>
+
+        <!--
+          Always there, and always last, so the update banner reads as something
+          that appeared above it rather than as part of it. A button and not a
+          link: an <a> would navigate the chrome window itself, and the site
+          belongs in the user's browser.
+        -->
+        <div class="sidebar-footer">
+          <button type="button" id="site-link-btn" class="site-link" title="mvmos.org">mvmOS</button>
         </div>
       </aside>
 

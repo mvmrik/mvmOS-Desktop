@@ -17,6 +17,7 @@ const {
   app,
   BrowserWindow,
   Menu,
+  Tray,
   WebContentsView,
   dialog,
   ipcMain,
@@ -38,6 +39,12 @@ const { normalizeAddress, originOf, sameSite, isReachable, upgradeScheme } = req
 const SIDEBAR_WIDTH = 260;
 const DEFAULT_BOUNDS = { width: 1280, height: 800 };
 const BASE_TITLE = "mvmOS Desktop";
+// Packed with the app rather than looked up by name, so it is there whatever
+// the platform's installer did or did not put in an icon theme. The tray gets
+// the mark on its own: a status icon is drawn at about twenty pixels, and the
+// wordmark under the mark is a smudge at that size - and the count is drawn
+// over the bottom corner anyway.
+const APP_ICON_PATH = path.join(__dirname, "..", "build", "tray.png");
 // The popup an extension button opens, in device-independent pixels like every
 // other bound here.
 // A popup is measured by what it draws, and a page can only report a size at
@@ -695,7 +702,7 @@ let lastBadgeCount = 0;
  * front of the window title, which every task list shows, and the taskbar entry
  * is flashed when the count goes up while the window is not the one in front.
  */
-function applyBadge(count, overlayDataUrl) {
+function applyBadge(count, overlayDataUrl, trayDataUrl) {
   if (!app.isReady()) return;
   const total = count > 0 ? count : 0;
 
@@ -705,10 +712,14 @@ function applyBadge(count, overlayDataUrl) {
   } else {
     app.setBadgeCount(total);
   }
+  applyTrayBadge(total, trayDataUrl);
 
   if (win && !win.isDestroyed()) {
     win.setTitle(total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE);
-    if (total > lastBadgeCount && !win.isFocused()) flashBriefly();
+    if (total > lastBadgeCount && !win.isFocused()) win.flashFrame(true);
+    // Read somewhere else - on a phone, in another browser - while the window
+    // was never looked at: there is nothing left to point the user at.
+    if (total === 0) win.flashFrame(false);
   }
   lastBadgeCount = total;
   scheduleBadgeReassert(total);
@@ -731,35 +742,17 @@ function applyBadge(count, overlayDataUrl) {
 let badgeTimer = null;
 
 /*
- * The two halves of "something arrived" say different things and should not
- * last the same length of time. The colour is the announcement - it has been
- * seen or it has not, and a highlight that stays lit until the window is
- * focused is just noise once you have looked over at it. The count is the
- * state, and it belongs on the icon for as long as the page still reports it.
+ * The highlight stays lit until the window is looked at, rather than fading on
+ * its own after a while. It is the only part of "something arrived" that can be
+ * relied on to appear: the count is a request the launcher may refuse, so a
+ * highlight that had already faded would leave an unread message showing
+ * nowhere but in the window title.
  *
- * Which colour the announcement is drawn in is the window manager's to choose:
- * flashFrame only raises the window's urgency flag, and every desktop paints
- * that its own way.
+ * Which colour it is drawn in is the window manager's to choose - flashFrame
+ * only raises the window's urgency flag, and every desktop paints that its own
+ * way - and so is when it goes out, since some of them clear it on focus and
+ * on nothing else.
  */
-const FLASH_MS = 5000;
-let flashTimer = null;
-
-function stopFlashing() {
-  if (flashTimer) clearTimeout(flashTimer);
-  flashTimer = null;
-  if (win && !win.isDestroyed()) win.flashFrame(false);
-}
-
-function flashBriefly() {
-  if (!win || win.isDestroyed()) return;
-  win.flashFrame(true);
-  if (flashTimer) clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => {
-    flashTimer = null;
-    stopFlashing();
-  }, FLASH_MS);
-}
-
 function scheduleBadgeReassert(total) {
   if (badgeTimer) clearInterval(badgeTimer);
   badgeTimer = null;
@@ -771,6 +764,65 @@ function reassertBadge() {
   if (process.platform !== "linux") return;
   if (lastBadgeCount <= 0 || !app.isReady()) return;
   app.setBadgeCount(lastBadgeCount);
+}
+
+/* ------------------------------------------------------------------- tray */
+
+/*
+ * The count on the app's own icon is the launcher's to draw, and on Linux that
+ * is a request rather than an instruction: the number is broadcast over the
+ * Unity protocol and a panel is free to ignore it. Several do - the signal
+ * goes out with the right name and the right number and simply lands nowhere,
+ * which leaves an unread message visible in the window title and nowhere else.
+ *
+ * A status icon is the one place the app draws the pixels itself. It is asked
+ * for, not matched by name against a desktop entry, so what it shows is what
+ * the app put there. Only Linux gets one: the Windows taskbar overlay and the
+ * macOS dock badge already put the number where the user looks, and a second
+ * icon there would only be one more thing in the tray.
+ */
+let tray = null;
+let trayBaseIcon = null;
+
+function baseTrayIcon() {
+  if (!trayBaseIcon) {
+    const icon = nativeImage.createFromPath(APP_ICON_PATH);
+    trayBaseIcon = icon.isEmpty() ? null : icon.resize({ width: 64, height: 64 });
+  }
+  return trayBaseIcon;
+}
+
+function showWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function createTray() {
+  if (process.platform !== "linux" || tray) return;
+  const icon = baseTrayIcon();
+  if (!icon) return;
+  tray = new Tray(icon);
+  tray.setToolTip(BASE_TITLE);
+  // An indicator has no click of its own on most panels - the menu is all of
+  // it - so what the click does is in the menu as well.
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: `Show ${BASE_TITLE}`, click: () => showWindow() },
+      { type: "separator" },
+      { label: "Quit", click: () => app.quit() },
+    ])
+  );
+  tray.on("click", () => showWindow());
+}
+
+/* The icon with the count drawn into it, or the plain one when there is none. */
+function applyTrayBadge(total, trayDataUrl) {
+  if (!tray || tray.isDestroyed()) return;
+  const image = total > 0 && trayDataUrl ? nativeImage.createFromDataURL(trayDataUrl) : baseTrayIcon();
+  if (image && !image.isEmpty()) tray.setImage(image);
+  tray.setToolTip(total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE);
 }
 
 /* -------------------------------------------------------------- fullscreen */
@@ -984,7 +1036,7 @@ function createWindow() {
     applyLayout();
     setTimeout(applyLayout, 150);
   });
-  win.on("focus", () => stopFlashing());
+  win.on("focus", () => win.flashFrame(false));
   // A window that is mapped again arrives in the task list as a new entry, so
   // whatever count it carried has to be said over; see reassertBadge().
   win.on("show", () => reassertBadge());
@@ -1144,7 +1196,15 @@ ipcMain.handle("chrome:overlay", (_event, open) => {
 
 ipcMain.handle("chrome:sidebar", (_event, visible) => setSidebarVisible(visible));
 
-ipcMain.handle("chrome:badge", (_event, { count, overlay }) => applyBadge(Number(count) || 0, overlay));
+ipcMain.handle("chrome:badge", (_event, { count, overlay, trayIcon }) =>
+  applyBadge(Number(count) || 0, overlay, trayIcon)
+);
+// The chrome renderer draws the count into the icon and needs the icon itself
+// to draw on; the main process is the only side that can read it off disk.
+ipcMain.handle("chrome:app-icon", () => {
+  const icon = baseTrayIcon();
+  return icon ? icon.toDataURL() : null;
+});
 
 ipcMain.handle("update:check", () => runUpdateCheck(true));
 
@@ -1443,6 +1503,7 @@ app.whenReady().then(async () => {
 
   buildMenu();
   createWindow();
+  createTray();
 
   // Late enough that neither the check nor the icon lookups delay the first
   // paint, early enough that the answer is there before the user has finished
@@ -1469,6 +1530,11 @@ app.on("before-quit", (event) => {
     cookiesSaved = true;
     app.quit();
   });
+});
+
+app.on("will-quit", () => {
+  if (tray && !tray.isDestroyed()) tray.destroy();
+  tray = null;
 });
 
 app.on("window-all-closed", () => {

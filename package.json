@@ -1,7 +1,7 @@
 {
   "name": "mvmos-desktop",
   "productName": "mvmOS Desktop",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Desktop client for managing and using your mvmOS installations.",
   "homepage": "https://mvmos.org",
   "desktopName": "mvmos-desktop.desktop",
@@ -27,6 +27,7 @@
       "main/**/*",
       "renderer/**/*",
       "build/icon.*",
+      "build/tray.png",
       "package.json"
     ],
     "linux": {

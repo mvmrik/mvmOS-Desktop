@@ -709,6 +709,61 @@ function drawBadgeOverlay(count) {
   return canvas.toDataURL("image/png");
 }
 
+/*
+ * Linux gets the whole icon rather than a badge to lay over one: it goes on a
+ * status icon the app draws itself, because the panels there are free to
+ * ignore the count the app reports and several of them do.
+ */
+let appIcon = null;
+let appIconAsked = false;
+
+function loadAppIcon() {
+  if (appIconAsked) return;
+  appIconAsked = true;
+  window.api.appIcon().then((dataUrl) => {
+    if (!dataUrl) return;
+    const image = new Image();
+    image.onload = () => {
+      appIcon = image;
+      // The count was sent without an icon while this was loading.
+      lastBadgeCount = -1;
+      updateAppBadge();
+    };
+    image.src = dataUrl;
+  });
+}
+
+function drawTrayIcon(count) {
+  if (!appIcon) return null;
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.drawImage(appIcon, 0, 0, size, size);
+
+  const text = count > 99 ? "99+" : String(count);
+  const radius = 20;
+  const centre = size - radius - 1;
+  ctx.beginPath();
+  ctx.arc(centre, centre, radius, 0, Math.PI * 2);
+  ctx.fillStyle = "#ff3b30";
+  ctx.fill();
+  // The icon underneath is unknown and may be red itself.
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `bold ${text.length > 2 ? 18 : 27}px -apple-system, "Segoe UI", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, centre, centre + 1);
+  return canvas.toDataURL("image/png");
+}
+
 // The unread counts the open pages report in their own titles, added up.
 function updateAppBadge() {
   let total = 0;
@@ -716,10 +771,12 @@ function updateAppBadge() {
     const { badge } = parseBadge(tab.title || "");
     if (badge && badge > 0) total += badge;
   }
+  if (window.api.platform === "linux") loadAppIcon();
   if (total === lastBadgeCount) return;
   lastBadgeCount = total;
   const overlay = total > 0 && window.api.platform === "win32" ? drawBadgeOverlay(total) : null;
-  window.api.setBadge(total, overlay);
+  const trayIcon = total > 0 && window.api.platform === "linux" ? drawTrayIcon(total) : null;
+  window.api.setBadge(total, overlay, trayIcon);
 }
 
 function renderApp() {
@@ -855,6 +912,24 @@ async function submitUnlock(event) {
   $("lock-pin").focus();
 }
 
+/*
+ * The padlock in the sidebar header. A lock with no PIN behind it would be a
+ * door with no key, so until one is set the button says so and leads to where
+ * it is set; `hasPin` is settled before this is first called.
+ */
+function renderLockButton() {
+  $("lock-now-btn").title = hasPin ? "Lock now" : "Lock now — set a PIN first";
+}
+
+async function lockFromHeader() {
+  if (!hasPin) {
+    await openSettings();
+    $("pin-new").focus();
+    return;
+  }
+  await window.api.lockNow();
+}
+
 /* --------------------------------------------------------------- settings */
 
 let hasPin = false;
@@ -871,6 +946,7 @@ function renderPinSection() {
   $("pin-error").classList.add("hidden");
   $("pin-current").value = "";
   $("pin-new").value = "";
+  renderLockButton();
 }
 
 /* -------------------------------------------------------- extension bar */
@@ -1080,6 +1156,9 @@ function wireHandlers() {
     applyExtensionResult(await window.api.addExtensionFolder());
   });
 
+  $("lock-now-btn").addEventListener("click", lockFromHeader);
+  $("site-link-btn").addEventListener("click", () => window.api.openExternal("https://mvmos.org"));
+
   $("lock-form").addEventListener("submit", submitUnlock);
 
   document.addEventListener("keydown", (event) => {
@@ -1169,6 +1248,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // way to the PIN prompt.
   const lockState = await window.api.lockState();
   hasPin = lockState.hasPin;
+  renderLockButton();
   if (lockState.locked) showLockScreen(true);
 
   setExtensionActions(await window.api.extensionActions());
