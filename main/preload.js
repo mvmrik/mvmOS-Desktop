@@ -15,10 +15,11 @@ function on(channel, handler) {
 
 contextBridge.exposeInMainWorld("api", {
   sidebarWidth: SIDEBAR_WIDTH,
+  platform: process.platform,
 
   listInstallations: () => ipcRenderer.invoke("installations:list"),
-  addInstallation: (name, address) => ipcRenderer.invoke("installations:add", { name, address }),
-  updateInstallation: (id, name, address) => ipcRenderer.invoke("installations:update", { id, name, address }),
+  addInstallation: (name, address, type) => ipcRenderer.invoke("installations:add", { name, address, type }),
+  updateInstallation: (id, name, address, type) => ipcRenderer.invoke("installations:update", { id, name, address, type }),
   removeInstallation: (id) => ipcRenderer.invoke("installations:remove", id),
   reorderInstallations: (orderedIds) => ipcRenderer.invoke("installations:reorder", orderedIds),
   checkReachable: (address) => ipcRenderer.invoke("installations:reachable", address),
@@ -26,15 +27,23 @@ contextBridge.exposeInMainWorld("api", {
   openTab: (payload) => ipcRenderer.invoke("tabs:open", payload),
   activateTab: (tabId) => ipcRenderer.invoke("tabs:activate", tabId),
   closeTab: (tabId) => ipcRenderer.invoke("tabs:close", tabId),
+  restoreSession: () => ipcRenderer.invoke("session:restore"),
 
   setOverlay: (open) => ipcRenderer.invoke("chrome:overlay", open),
   setSidebarVisible: (visible) => ipcRenderer.invoke("chrome:sidebar", visible),
+  setBadge: (count, overlay) => ipcRenderer.invoke("chrome:badge", { count, overlay }),
+  checkForUpdate: () => ipcRenderer.invoke("update:check"),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
 
   onNewChildTab: (handler) => on("tab:new-child", handler),
   onTabTitle: (handler) => on("tab:title", handler),
+  onTabIcon: (handler) => on("tab:icon", handler),
   onTabFailed: (handler) => on("tab:failed", handler),
   onTabClosed: (handler) => on("tab:closed", handler),
+  onInstallationIcon: (handler) => on("installation:icon", handler),
+  onInstallationAddress: (handler) => on("installation:address", handler),
   onSidebarChanged: (handler) => on("sidebar:changed", handler),
   onAddInstallationRequested: (handler) => on("menu:add-installation", handler),
+  onUpdateAvailable: (handler) => on("update:available", handler),
+  onUpdateNone: (handler) => on("update:none", handler),
 });

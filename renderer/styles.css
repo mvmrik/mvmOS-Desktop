@@ -87,7 +87,8 @@ button {
   color: var(--text-muted);
 }
 
-.installation-form input {
+.installation-form input,
+.installation-form select {
   padding: 8px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -96,7 +97,8 @@ button {
   font-size: 14px;
 }
 
-.installation-form input:focus {
+.installation-form input:focus,
+.installation-form select:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -119,6 +121,13 @@ button {
   color: var(--danger);
   font-size: 13px;
   margin: 0;
+}
+
+.form-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: -4px 0 0;
 }
 
 /* Shell layout */
@@ -287,10 +296,43 @@ button {
 .installation-header {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   padding: 4px 4px 6px;
   cursor: pointer;
   user-select: none;
+}
+
+/* Site icons. A page that offers no icon falls back to a letter tile, so the
+   rows keep the same rhythm whether the icon loaded or not. */
+.site-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: contain;
+  background: transparent;
+}
+
+.site-icon-fallback {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.tab-row.active .site-icon-fallback {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: transparent;
+  color: #fff;
 }
 
 .installation-name {
@@ -384,6 +426,53 @@ button {
 .tab-row.active .tab-badge {
   background: #fff;
   color: var(--accent);
+}
+
+/* Update banner */
+
+.update-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.update-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.update-text strong {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#update-download-btn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#update-download-btn:hover {
+  background: var(--accent-hover);
 }
 
 /* Modals */

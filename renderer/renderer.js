@@ -76,12 +76,23 @@ function confirmDialog({ title, message, okLabel = "Remove" }) {
 // One dialog serves both adding and editing; `editingId` decides which.
 let editingId = null;
 
+const TYPE_HINTS = {
+  mvmos: "Opens the desktop and the public page of an mvmOS installation. Links to other sites go to your browser.",
+  site: "Any website, opened in one tab that browses freely, the way a browser window would.",
+};
+
+function updateTypeHint() {
+  $("modal-type-hint").textContent = TYPE_HINTS[$("modal-type").value] || "";
+}
+
 async function openInstallationModal(installation = null) {
   editingId = installation ? installation.id : null;
   $("installation-modal-title").textContent = installation ? "Edit installation" : "Add installation";
   $("modal-submit-btn").textContent = installation ? "Save" : "Add";
   $("modal-name").value = installation ? installation.name : "";
   $("modal-address").value = installation ? installation.address : "";
+  $("modal-type").value = installation && installation.type === "site" ? "site" : "mvmos";
+  updateTypeHint();
   $("modal-error").classList.add("hidden");
   await showModal("installation-modal");
   $("modal-address").focus();
@@ -199,14 +210,14 @@ async function submitInstallationForm(event) {
 
   try {
     if (editingId) {
-      const { installation, tabsClosed } = await window.api.updateInstallation(editingId, name, address);
+      const { installation, tabsClosed } = await window.api.updateInstallation(editingId, name, address, $("modal-type").value);
       const index = installations.findIndex((i) => i.id === editingId);
       if (index !== -1) installations[index] = installation;
       if (tabsClosed) {
         forgetTabs(new Set(tabs.filter((t) => t.installationId === editingId).map((t) => t.id)));
       }
     } else {
-      installations.push(await window.api.addInstallation(name, address));
+      installations.push(await window.api.addInstallation(name, address, $("modal-type").value));
     }
     await hideModal("installation-modal");
     renderApp();
@@ -244,6 +255,24 @@ function parseBadge(title) {
   return { label: label || title, badge: parseInt(match[1], 10) };
 }
 
+/*
+ * The icon of a site, or a letter tile when it has none. Icons arrive as data
+ * URLs from the main process: the chrome renderer has no network of its own.
+ */
+function makeSiteIcon(icon, label) {
+  if (icon) {
+    const img = document.createElement("img");
+    img.className = "site-icon";
+    img.src = icon;
+    img.alt = "";
+    return img;
+  }
+  const fallback = document.createElement("span");
+  fallback.className = "site-icon-fallback";
+  fallback.textContent = (label || "?").trim().charAt(0) || "?";
+  return fallback;
+}
+
 function makeIconButton({ label, title, className, onClick, disabled = false }) {
   const btn = document.createElement("button");
   btn.className = `icon-btn subtle ${className || ""}`.trim();
@@ -266,6 +295,8 @@ function renderTabRow(tab, depth) {
   row.style.paddingLeft = `${12 + depth * 16}px`;
 
   const { label: labelText, badge } = parseBadge(tab.title);
+
+  row.appendChild(makeSiteIcon(tab.icon, tab.installationName || labelText));
 
   const label = document.createElement("span");
   label.className = "tab-label";
@@ -308,6 +339,8 @@ function renderInstallationBlock(installation, index) {
   const header = document.createElement("div");
   header.className = "installation-header";
   header.title = installation.address;
+
+  header.appendChild(makeSiteIcon(installation.icon, installation.name));
 
   const nameSpan = document.createElement("span");
   nameSpan.className = "installation-name";
@@ -358,18 +391,28 @@ function renderInstallationBlock(installation, index) {
 
   const actions = document.createElement("div");
   actions.className = "installation-actions";
-  actions.appendChild(
-    makeActionButton("mvmOS Desktop", () => {
-      hideActions();
-      openOrSwitch(installation.id, "desktop");
-    }),
-  );
-  actions.appendChild(
-    makeActionButton("mvmOS Public", () => {
-      hideActions();
-      openOrSwitch(installation.id, "apphub");
-    }),
-  );
+  // A plain website has one page to open; an mvmOS installation has two.
+  if (installation.type === "site") {
+    actions.appendChild(
+      makeActionButton("Open", () => {
+        hideActions();
+        openOrSwitch(installation.id, "site");
+      }),
+    );
+  } else {
+    actions.appendChild(
+      makeActionButton("mvmOS Desktop", () => {
+        hideActions();
+        openOrSwitch(installation.id, "desktop");
+      }),
+    );
+    actions.appendChild(
+      makeActionButton("mvmOS Public", () => {
+        hideActions();
+        openOrSwitch(installation.id, "apphub");
+      }),
+    );
+  }
   block.appendChild(actions);
 
   const topLevelTabs = tabs.filter((t) => t.installationId === installation.id && !t.parentId);
@@ -389,6 +432,51 @@ function renderSidebar() {
   installations.forEach((installation, index) => {
     container.appendChild(renderInstallationBlock(installation, index));
   });
+  updateAppBadge();
+}
+
+/* ------------------------------------------------------------------- badge */
+
+let lastBadgeCount = -1;
+
+/*
+ * Windows puts a picture over the taskbar icon rather than a number, and the
+ * main process has no canvas to draw one on - so the badge is drawn here and
+ * sent across as a data URL. macOS and Linux only need the number itself.
+ */
+function drawBadgeOverlay(count) {
+  const size = 32;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.fillStyle = "#ff3b30";
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  const text = count > 99 ? "99+" : String(count);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `bold ${text.length > 2 ? 14 : 20}px -apple-system, "Segoe UI", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, size / 2, size / 2 + 1);
+  return canvas.toDataURL("image/png");
+}
+
+// The unread counts the open pages report in their own titles, added up.
+function updateAppBadge() {
+  let total = 0;
+  for (const tab of tabs) {
+    const { badge } = parseBadge(tab.title || "");
+    if (badge && badge > 0) total += badge;
+  }
+  if (total === lastBadgeCount) return;
+  lastBadgeCount = total;
+  const overlay = total > 0 && window.api.platform === "win32" ? drawBadgeOverlay(total) : null;
+  window.api.setBadge(total, overlay);
 }
 
 function renderApp() {
@@ -403,6 +491,36 @@ function renderApp() {
   shellEl.classList.remove("hidden");
   renderSidebar();
   if (!activeTabId) setStatus(STATUS_DEFAULT);
+}
+
+/* ------------------------------------------------------------------ update */
+
+let dismissedUpdate = null;
+
+function showUpdateBanner({ version, url }) {
+  if (dismissedUpdate === version) return;
+  $("update-title").textContent = "Update available";
+  $("update-message").textContent = `Version ${version} is ready to download.`;
+  $("update-download-btn").classList.remove("hidden");
+  $("update-download-btn").onclick = () => window.api.openExternal(url);
+  $("update-dismiss-btn").onclick = () => {
+    dismissedUpdate = version;
+    $("update-banner").classList.add("hidden");
+  };
+  $("update-banner").classList.remove("hidden");
+}
+
+// Only ever shown for a check the user asked for: silence is the right answer
+// for the one that runs on its own at startup.
+function showUpToDateBanner(version) {
+  $("update-title").textContent = "Up to date";
+  $("update-message").textContent = `Version ${version} is the newest release.`;
+  $("update-download-btn").classList.add("hidden");
+  $("update-dismiss-btn").onclick = () => $("update-banner").classList.add("hidden");
+  $("update-banner").classList.remove("hidden");
+  setTimeout(() => {
+    if ($("update-title").textContent === "Up to date") $("update-banner").classList.add("hidden");
+  }, 6000);
 }
 
 /* ---------------------------------------------------------- drag to reorder */
@@ -482,7 +600,11 @@ function wireHandlers() {
     submitBtn.textContent = "Checking…";
     try {
       installations.push(
-        await window.api.addInstallation($("onboarding-name").value, $("onboarding-address").value),
+        await window.api.addInstallation(
+          $("onboarding-name").value,
+          $("onboarding-address").value,
+          $("onboarding-type").value,
+        ),
       );
       $("onboarding-name").value = "";
       $("onboarding-address").value = "";
@@ -498,6 +620,7 @@ function wireHandlers() {
     }
   });
 
+  $("modal-type").addEventListener("change", updateTypeHint);
   $("add-installation-btn").addEventListener("click", () => openInstallationModal(null));
   $("hide-sidebar-btn").addEventListener("click", () => window.api.setSidebarVisible(false));
   $("modal-cancel-btn").addEventListener("click", () => hideModal("installation-modal"));
@@ -521,9 +644,35 @@ function wireHandlers() {
   window.api.onNewChildTab(async ({ parentId, url }) => {
     const parent = tabs.find((t) => t.id === parentId);
     if (!parent) return;
-    const kind = url.includes("/pub/apphub") ? "apphub" : "desktop";
+    const kind = parent.kind === "site"
+      ? "site"
+      : (url.includes("/pub/apphub") ? "apphub" : "desktop");
     await requestOpenTab(parent.installationId, kind, parentId, url);
   });
+
+  window.api.onTabIcon(({ tabId, icon }) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab || !icon) return;
+    tab.icon = icon;
+    renderSidebar();
+  });
+
+  window.api.onInstallationIcon(({ id, icon }) => {
+    const installation = installations.find((i) => i.id === id);
+    if (!installation || !icon) return;
+    installation.icon = icon;
+    renderSidebar();
+  });
+
+  window.api.onInstallationAddress(({ id, address }) => {
+    const installation = installations.find((i) => i.id === id);
+    if (!installation || !address) return;
+    installation.address = address;
+    renderSidebar();
+  });
+
+  window.api.onUpdateAvailable(showUpdateBanner);
+  window.api.onUpdateNone(({ version }) => showUpToDateBanner(version));
 
   window.api.onTabTitle(({ tabId, title }) => {
     const tab = tabs.find((t) => t.id === tabId);
@@ -549,4 +698,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   wireHandlers();
   installations = await window.api.listInstallations();
   renderApp();
+
+  /*
+   * The main process re-opens whatever was on screen last time and hands back
+   * the tabs it created, already laid out and with one of them active - the
+   * sidebar only has to catch up with it.
+   */
+  const restored = await window.api.restoreSession();
+  if (restored && restored.tabs.length) {
+    tabs = restored.tabs;
+    activeTabId = restored.activeTabId;
+    if (activeTabId) clearStatus();
+    renderSidebar();
+  }
 });

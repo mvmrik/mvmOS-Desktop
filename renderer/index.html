@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:" />
     <link rel="stylesheet" href="styles.css" />
     <title>mvmOS Desktop</title>
     <script src="renderer.js" defer></script>
@@ -23,7 +23,14 @@
             Address
             <input id="onboarding-address" type="text" placeholder="e.g. mvmos.example.com or 192.168.1.10:2026" autocomplete="off" required />
           </label>
-          <button type="submit">Add installation</button>
+          <label>
+            Kind
+            <select id="onboarding-type">
+              <option value="mvmos">mvmOS installation</option>
+              <option value="site">Website</option>
+            </select>
+          </label>
+          <button type="submit">Add</button>
           <p class="form-error hidden" id="onboarding-error"></p>
         </form>
       </div>
@@ -43,6 +50,18 @@
           </div>
         </div>
         <div id="installation-list" class="installation-list"></div>
+
+        <!-- Only ever shown once the release check has found a newer version. -->
+        <div id="update-banner" class="update-banner hidden">
+          <div class="update-text">
+            <strong id="update-title">Update available</strong>
+            <span id="update-message"></span>
+          </div>
+          <div class="update-actions">
+            <button type="button" id="update-download-btn">Download</button>
+            <button type="button" id="update-dismiss-btn" class="icon-btn" title="Dismiss">×</button>
+          </div>
+        </div>
       </aside>
 
       <main id="content-area" class="content-area">
@@ -66,6 +85,14 @@
             Address
             <input id="modal-address" type="text" placeholder="e.g. mvmos.example.com or 192.168.1.10:2026" autocomplete="off" required />
           </label>
+          <label>
+            Kind
+            <select id="modal-type">
+              <option value="mvmos">mvmOS installation</option>
+              <option value="site">Website</option>
+            </select>
+          </label>
+          <p class="form-hint" id="modal-type-hint"></p>
           <p class="form-error hidden" id="modal-error"></p>
           <div class="modal-actions">
             <button type="button" id="modal-cancel-btn" class="secondary">Cancel</button>
