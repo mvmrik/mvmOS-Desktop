@@ -36,7 +36,13 @@ function load() {
   // rely on would break the sidebar rather than fail loudly here.
   return parsed
     .filter((i) => i && typeof i.id === "string" && typeof i.name === "string" && typeof i.address === "string")
-    .map((i) => ({ ...i, type: i.type === "site" ? "site" : "mvmos" }));
+    .map((i) => ({
+      ...i,
+      type: i.type === "site" ? "site" : "mvmos",
+      // A timestamp (ms) for a timed mute, "forever" for an indefinite one, or
+      // absent - anything else from a hand-edited file is not muted.
+      muteUntil: i.muteUntil === "forever" || Number.isFinite(i.muteUntil) ? i.muteUntil : undefined,
+    }));
 }
 
 function save(list) {
@@ -64,8 +70,9 @@ function saveSession(session) {
 }
 
 /**
- * { pin, extensions, showTray, closeToTray } - a file written by an older
- * version simply has fewer of them.
+ * { pin, extensions, showTray, closeToTray, lockTimeoutMinutes,
+ * lockResetOnActivity } - a file written by an older version simply has fewer
+ * of them.
  */
 const TRAY_DEFAULTS = {
   // On by default: on Linux it is the only place an unread count is sure to
@@ -76,10 +83,21 @@ const TRAY_DEFAULTS = {
   closeToTray: false,
 };
 
+// 0 means auto-lock is off; it only ever does anything once a PIN exists.
+// Reset-on-activity defaults on, since a fixed countdown that ignores use of
+// the app is the less forgiving of the two and worth opting into instead.
+const LOCK_TIMEOUT_DEFAULTS = {
+  lockTimeoutMinutes: 0,
+  lockResetOnActivity: true,
+};
+
 function loadSettings() {
   const parsed = readJson("settings.json");
-  if (!parsed || typeof parsed !== "object") return { pin: null, extensions: [], ...TRAY_DEFAULTS };
+  if (!parsed || typeof parsed !== "object") {
+    return { pin: null, extensions: [], ...TRAY_DEFAULTS, ...LOCK_TIMEOUT_DEFAULTS };
+  }
   const pin = parsed.pin;
+  const minutes = Math.round(Number(parsed.lockTimeoutMinutes));
   return {
     pin: pin && typeof pin.salt === "string" && typeof pin.hash === "string"
       ? { salt: pin.salt, hash: pin.hash }
@@ -89,6 +107,8 @@ function loadSettings() {
       : [],
     showTray: parsed.showTray !== false,
     closeToTray: parsed.closeToTray === true,
+    lockTimeoutMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : 0,
+    lockResetOnActivity: parsed.lockResetOnActivity !== false,
   };
 }
 

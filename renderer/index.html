@@ -9,43 +9,19 @@
   </head>
 
   <body>
-    <!-- Shown until there is at least one installation to put in the sidebar. -->
-    <div id="onboarding" class="onboarding hidden">
-      <div class="onboarding-card">
-        <h1>mvmOS Desktop</h1>
-        <p class="subtitle">Add your first mvmOS installation to get started.</p>
-        <form id="onboarding-form" class="installation-form">
-          <label>
-            Display name
-            <input id="onboarding-name" type="text" placeholder="e.g. Home server" autocomplete="off" />
-          </label>
-          <label>
-            Address
-            <input id="onboarding-address" type="text" placeholder="e.g. mvmos.example.com or 192.168.1.10:2026" autocomplete="off" required />
-          </label>
-          <label>
-            Kind
-            <select id="onboarding-type">
-              <option value="mvmos">mvmOS installation</option>
-              <option value="site">Website</option>
-            </select>
-          </label>
-          <button type="submit">Add</button>
-          <p class="form-error hidden" id="onboarding-error"></p>
-        </form>
-      </div>
-    </div>
-
     <!--
       The right-hand pane is covered by the active tab's own view whenever one
-      is open, so it only ever shows the states that exist between tabs.
+      is open, and by the mvmOS home page otherwise, so it only ever shows the
+      states that exist between the two.
     -->
-    <div id="shell" class="shell hidden">
+    <div id="shell" class="shell">
       <aside id="sidebar" class="sidebar">
         <div class="sidebar-header">
           <span class="brand">mvmOS Desktop</span>
           <div class="sidebar-header-actions">
-            <button id="add-installation-btn" class="icon-btn" title="Add installation">+</button>
+            <button id="add-installation-btn" class="icon-btn" title="Add mvmOS installation">+</button>
+            <!-- The time left until auto-lock, when it is on; see setLockDeadline(). -->
+            <span id="lock-countdown" class="lock-countdown hidden"></span>
             <!-- Locking is otherwise buried in the settings dialog, which is the
                  wrong place for the one thing you want to reach in a hurry. -->
             <button id="lock-now-btn" class="icon-btn" title="Lock now">
@@ -110,13 +86,6 @@
             Address
             <input id="modal-address" type="text" placeholder="e.g. mvmos.example.com or 192.168.1.10:2026" autocomplete="off" required />
           </label>
-          <label>
-            Kind
-            <select id="modal-type">
-              <option value="mvmos">mvmOS installation</option>
-              <option value="site">Website</option>
-            </select>
-          </label>
           <p class="form-hint" id="modal-type-hint"></p>
           <p class="form-error hidden" id="modal-error"></p>
           <div class="modal-actions">
@@ -155,6 +124,19 @@
               <button type="button" id="pin-lock-btn" class="secondary hidden">Lock now</button>
             </div>
           </form>
+
+          <label class="lock-timeout-row">
+            Lock after
+            <input id="lock-timeout-minutes" type="number" min="0" step="1" inputmode="numeric" />
+            minutes
+          </label>
+          <label class="settings-check">
+            <input type="checkbox" id="lock-reset-activity" />
+            <span>
+              Restart the timer whenever the app is used
+              <em class="form-hint" id="lock-timeout-hint"></em>
+            </span>
+          </label>
         </section>
 
         <!-- Hidden on macOS, where the dock already does all of this. -->

@@ -39,6 +39,9 @@ const { normalizeAddress, originOf, sameSite, isReachable, upgradeScheme } = req
 const SIDEBAR_WIDTH = 260;
 const DEFAULT_BOUNDS = { width: 1280, height: 800 };
 const BASE_TITLE = "mvmOS Desktop";
+// Loaded in the content area whenever no tab is active, in place of the old
+// "select or open an installation" placeholder.
+const HOME_URL = "https://mvmos.org";
 // Packed with the app rather than looked up by name, so it is there whatever
 // the platform's installer did or did not put in an icon theme. The tray gets
 // the mark on its own: a status icon is drawn at about twenty pixels, and the
@@ -72,6 +75,10 @@ let overlayOpen = false;
 // While locked nothing at all is shown: the tab views are hidden here and the
 // chrome renderer covers the sidebar with the PIN prompt.
 let locked = false;
+
+/** The mvmos.org view shown in the content area while no tab is active. */
+let homeView = null;
+let homeVisible = false;
 
 /** What the toolbar draws, refreshed whenever an extension loads or goes. */
 let extensionActions = [];
@@ -115,6 +122,53 @@ function applyLayout() {
     if (shouldShow) tab.view.setBounds(bounds);
     setViewVisible(tab, shouldShow);
   }
+  if (homeView) {
+    const shouldShowHome = homeVisible && !activeTabId && !overlayOpen && !locked;
+    if (shouldShowHome) homeView.setBounds(bounds);
+    if (typeof homeView.setVisible === "function") homeView.setVisible(shouldShowHome);
+  }
+}
+
+/*
+ * Created the first time it is needed rather than eagerly, so an install that
+ * never sees the empty state never opens a network connection for it either.
+ */
+function ensureHomeView() {
+  if (homeView) return homeView;
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  view.setBackgroundColor("#1e1f22");
+  const wc = view.webContents;
+  wc.on("input-event", () => noteActivity());
+  // Same rule a website tab follows: stay inside for the site's own pages,
+  // send anything else to the user's real browser.
+  wc.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (event, navUrl) => {
+    if (!sameSite(navUrl, HOME_URL)) {
+      event.preventDefault();
+      shell.openExternal(navUrl);
+    }
+  });
+  win.contentView.addChildView(view);
+  if (typeof view.setVisible === "function") view.setVisible(false);
+  wc.loadURL(HOME_URL);
+  homeView = view;
+  return view;
+}
+
+function setHomeVisible(visible) {
+  homeVisible = Boolean(visible);
+  if (homeVisible) ensureHomeView();
+  applyLayout();
 }
 
 function setSidebarVisible(visible) {
@@ -473,6 +527,93 @@ function tabContextMenu(tabId) {
   ]).popup({ window: win });
 }
 
+const HOUR_MS = 60 * 60000;
+
+function isMuted(installation) {
+  if (!installation) return false;
+  const until = installation.muteUntil;
+  if (until === "forever") return true;
+  return typeof until === "number" && Date.now() < until;
+}
+
+/*
+ * `duration` is a number of ms, the string "forever", or null to unmute.
+ * Persisted on the installation itself, so it survives closing the tab and
+ * restarting the app - the whole point of the longer durations.
+ */
+function setMute(installationId, duration) {
+  const installation = installations.find((i) => i.id === installationId);
+  if (!installation) return;
+  if (duration === null) delete installation.muteUntil;
+  else if (duration === "forever") installation.muteUntil = "forever";
+  else installation.muteUntil = Date.now() + duration;
+  store.save(installations);
+  if (win && !win.isDestroyed()) {
+    win.webContents.send("installation:mute", { id: installationId, muteUntil: installation.muteUntil || null });
+  }
+}
+
+// A timed mute that has run out is worth exactly as much as no mute at all,
+// but nothing else touches it again until the next badge-affecting event, so
+// it would otherwise stay silenced until the page happens to update its title.
+function sweepExpiredMutes() {
+  const now = Date.now();
+  let changed = false;
+  for (const installation of installations) {
+    if (typeof installation.muteUntil !== "number" || installation.muteUntil > now) continue;
+    delete installation.muteUntil;
+    changed = true;
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("installation:mute", { id: installation.id, muteUntil: null });
+    }
+  }
+  if (changed) store.save(installations);
+}
+
+/*
+ * Right-clicking a row in the sidebar - an open tab, or a website that may not
+ * be open at all - rather than the page content itself, which is what
+ * tabContextMenu() above is for.
+ */
+function showRowContextMenu({ installationId, tabId }) {
+  const installation = installations.find((i) => i.id === installationId);
+  if (!installation) return;
+  const tab = tabId ? tabs.get(tabId) : null;
+  const muted = isMuted(installation);
+
+  const muteFor = (label, duration) => ({ label, click: () => setMute(installationId, duration) });
+
+  const muteSubmenu = [];
+  if (muted) {
+    muteSubmenu.push({ label: "Unmute", click: () => setMute(installationId, null) }, { type: "separator" });
+  }
+  muteSubmenu.push(
+    muteFor("For 1 hour", HOUR_MS),
+    muteFor("For 3 hours", 3 * HOUR_MS),
+    muteFor("For 6 hours", 6 * HOUR_MS),
+    muteFor("For 12 hours", 12 * HOUR_MS),
+    muteFor("For 24 hours", 24 * HOUR_MS),
+    { label: "Forever", click: () => setMute(installationId, "forever") },
+  );
+
+  Menu.buildFromTemplate([
+    { label: muted ? "Muted" : "Mute", submenu: muteSubmenu },
+    {
+      label: "Reload",
+      enabled: Boolean(tab),
+      click: () => {
+        if (tab && !tab.view.webContents.isDestroyed()) tab.view.webContents.reload();
+      },
+    },
+    { type: "separator" },
+    {
+      label: sidebarVisible ? "Hide sidebar" : "Show sidebar",
+      accelerator: "CmdOrCtrl+B",
+      click: () => setSidebarVisible(!sidebarVisible),
+    },
+  ]).popup({ window: win });
+}
+
 function startUrlFor(installation, kind) {
   if (installation.type === "site") return installation.address;
   return `${installation.address}${kind === "apphub" ? "/pub/apphub/" : ""}`;
@@ -489,6 +630,13 @@ function defaultTitleFor(installation, kind) {
  * the opposite case - the user added it precisely to browse it - so it may
  * navigate wherever its links lead.
  */
+function installationIdForWebContents(wc) {
+  for (const tab of tabs.values()) {
+    if (tab.view.webContents === wc) return tab.info.installationId;
+  }
+  return null;
+}
+
 function belongsInside(tab, url) {
   if (tab.info.kind === "site") return /^https?:/i.test(url);
   return sameSite(url, tab.origin);
@@ -530,6 +678,7 @@ function createTab({ installationId, kind, parentId, url, id }) {
 
   const wc = view.webContents;
   const tab = { view, info, origin: originOf(targetUrl), url: targetUrl, visible: false };
+  wc.on("input-event", () => noteActivity());
 
   // Anything outside the installation's own site belongs in the user's real
   // browser, not in a tab of this app.
@@ -920,6 +1069,71 @@ function setLocked(value) {
   locked = Boolean(value) && Boolean(settings.pin);
   applyLayout();
   if (win && !win.isDestroyed()) win.webContents.send("lock:changed", locked);
+  if (locked) {
+    stopAutoLockTimer();
+    autoLockDeadline = null;
+    sendLockDeadline();
+  } else {
+    startAutoLockCountdown();
+  }
+}
+
+/* -------------------------------------------------------------- auto-lock */
+
+// null while there is nothing counting down; otherwise the epoch ms it fires.
+let autoLockDeadline = null;
+let autoLockTimer = null;
+// Real activity comes in bursts of many events at once; only the first one in
+// a burst has to move the deadline.
+let lastActivityNote = 0;
+
+function autoLockEnabled() {
+  return Boolean(settings.pin) && Number(settings.lockTimeoutMinutes) > 0;
+}
+
+function sendLockDeadline() {
+  if (win && !win.isDestroyed()) win.webContents.send("lock:deadline", autoLockDeadline);
+}
+
+function stopAutoLockTimer() {
+  if (autoLockTimer) clearInterval(autoLockTimer);
+  autoLockTimer = null;
+}
+
+function checkAutoLock() {
+  if (autoLockDeadline && Date.now() >= autoLockDeadline) setLocked(true);
+}
+
+/*
+ * Called on unlock and whenever the PIN or the timeout settings change while
+ * unlocked: whatever was counting down no longer applies, so it starts over
+ * from whatever the current settings say - which may be "not at all".
+ */
+function startAutoLockCountdown() {
+  stopAutoLockTimer();
+  if (!autoLockEnabled() || locked) {
+    autoLockDeadline = null;
+    sendLockDeadline();
+    return;
+  }
+  autoLockDeadline = Date.now() + settings.lockTimeoutMinutes * 60000;
+  sendLockDeadline();
+  autoLockTimer = setInterval(checkAutoLock, 1000);
+}
+
+/*
+ * Real input to the chrome window, a tab, or the home page - not merely the
+ * app being open, which is the distinction the user asked for. Silently does
+ * nothing unless reset-on-activity is actually on, so it is safe to call from
+ * every input source without checking the setting at each call site.
+ */
+function noteActivity() {
+  if (!autoLockEnabled() || locked || !settings.lockResetOnActivity) return;
+  const now = Date.now();
+  if (now - lastActivityNote < 2000) return;
+  lastActivityNote = now;
+  autoLockDeadline = now + settings.lockTimeoutMinutes * 60000;
+  sendLockDeadline();
 }
 
 /* ------------------------------------------------------------------ window */
@@ -931,7 +1145,8 @@ function buildMenu() {
     {
       label: "File",
       submenu: [
-        { label: "Add installation…", accelerator: "CmdOrCtrl+N", click: () => win.webContents.send("menu:add-installation") },
+        { label: "Add mvmOS installation…", accelerator: "CmdOrCtrl+N", click: () => win.webContents.send("menu:add-installation") },
+        { label: "Add Website…", accelerator: "CmdOrCtrl+Shift+N", click: () => win.webContents.send("menu:add-website") },
         { type: "separator" },
         { label: "Settings…", accelerator: "CmdOrCtrl+,", click: () => win.webContents.send("menu:settings") },
         {
@@ -1069,7 +1284,11 @@ function createWindow() {
     applyLayout();
     setTimeout(applyLayout, 150);
   });
-  win.on("focus", () => win.flashFrame(false));
+  win.on("focus", () => {
+    win.flashFrame(false);
+    noteActivity();
+  });
+  win.webContents.on("input-event", () => noteActivity());
   // A window that is mapped again arrives in the task list as a new entry, so
   // whatever count it carried has to be said over; see reassertBadge().
   win.on("show", () => reassertBadge());
@@ -1098,6 +1317,8 @@ function createWindow() {
     win = null;
     tabs.clear();
     activeTabId = null;
+    homeView = null;
+    homeVisible = false;
   });
 
   // The chrome itself never opens OS windows; a stray link goes to the browser.
@@ -1233,6 +1454,10 @@ ipcMain.handle("tabs:reorder", (_event, orderedIds) => {
   persistSession();
 });
 
+ipcMain.handle("tabs:context-menu", (_event, { installationId, tabId }) => {
+  showRowContextMenu({ installationId, tabId });
+});
+
 ipcMain.handle("session:restore", () => restoreSessionTabs());
 
 ipcMain.handle("chrome:overlay", (_event, open) => {
@@ -1241,6 +1466,9 @@ ipcMain.handle("chrome:overlay", (_event, open) => {
 });
 
 ipcMain.handle("chrome:sidebar", (_event, visible) => setSidebarVisible(visible));
+
+ipcMain.handle("home:show", () => setHomeVisible(true));
+ipcMain.handle("home:hide", () => setHomeVisible(false));
 
 ipcMain.handle("chrome:badge", (_event, { count, overlay, trayIcon }) =>
   applyBadge(Number(count) || 0, overlay, trayIcon)
@@ -1277,7 +1505,22 @@ ipcMain.handle("tray:set", (_event, { showTray, closeToTray }) => {
   return { supported: trayPlatform(), showTray: settings.showTray, closeToTray: settings.closeToTray };
 });
 
-ipcMain.handle("lock:state", () => ({ locked, hasPin: Boolean(settings.pin) }));
+ipcMain.handle("lock:state", () => ({
+  locked,
+  hasPin: Boolean(settings.pin),
+  lockTimeoutMinutes: settings.lockTimeoutMinutes,
+  lockResetOnActivity: settings.lockResetOnActivity,
+  deadline: autoLockDeadline,
+}));
+
+ipcMain.handle("lock:set-timeout", (_event, { minutes, resetOnActivity }) => {
+  const parsed = Math.round(Number(minutes));
+  settings.lockTimeoutMinutes = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  settings.lockResetOnActivity = resetOnActivity !== false;
+  store.saveSettings(settings);
+  if (!locked) startAutoLockCountdown();
+  return { lockTimeoutMinutes: settings.lockTimeoutMinutes, lockResetOnActivity: settings.lockResetOnActivity };
+});
 
 ipcMain.handle("lock:unlock", (_event, pin) => {
   if (!settings.pin) {
@@ -1298,6 +1541,7 @@ ipcMain.handle("pin:set", (_event, { currentPin, pin }) => {
   const salt = randomBytes(16).toString("hex");
   settings.pin = { salt, hash: hashPin(digits, salt) };
   store.saveSettings(settings);
+  if (!locked) startAutoLockCountdown();
   return { hasPin: true };
 });
 
@@ -1554,11 +1798,24 @@ app.whenReady().then(async () => {
   // A PIN means the app starts covered; nothing is shown until it is entered.
   locked = Boolean(settings.pin);
 
+  // A timed mute set before the app was last closed may already be over.
+  sweepExpiredMutes();
+  setInterval(sweepExpiredMutes, 30000);
+
   const defaultSession = electronSession.defaultSession;
   defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(GRANTED_PERMISSIONS.has(permission));
   });
-  defaultSession.setPermissionCheckHandler((_wc, permission) => GRANTED_PERMISSIONS.has(permission));
+  // Chromium re-checks this every time a page is about to show a notification,
+  // not just once at the initial permission prompt - so a muted installation's
+  // notifications can be blocked here without the page ever finding out.
+  defaultSession.setPermissionCheckHandler((wc, permission) => {
+    if (permission === "notifications") {
+      const installationId = installationIdForWebContents(wc);
+      if (isMuted(installations.find((i) => i.id === installationId))) return false;
+    }
+    return GRANTED_PERMISSIONS.has(permission);
+  });
 
   // Both have to be done before the first page loads: a cookie put back after
   // the page asked for it is a login the user still had to repeat.

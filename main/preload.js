@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("api", {
   activateTab: (tabId) => ipcRenderer.invoke("tabs:activate", tabId),
   closeTab: (tabId) => ipcRenderer.invoke("tabs:close", tabId),
   reorderTabs: (orderedIds) => ipcRenderer.invoke("tabs:reorder", orderedIds),
+  showRowContextMenu: (installationId, tabId) => ipcRenderer.invoke("tabs:context-menu", { installationId, tabId }),
   restoreSession: () => ipcRenderer.invoke("session:restore"),
 
   trayState: () => ipcRenderer.invoke("tray:state"),
@@ -38,6 +39,10 @@ contextBridge.exposeInMainWorld("api", {
   lockNow: () => ipcRenderer.invoke("lock:lock"),
   setPin: (currentPin, pin) => ipcRenderer.invoke("pin:set", { currentPin, pin }),
   clearPin: (currentPin) => ipcRenderer.invoke("pin:clear", currentPin),
+  setLockTimeout: (minutes, resetOnActivity) => ipcRenderer.invoke("lock:set-timeout", { minutes, resetOnActivity }),
+
+  showHome: () => ipcRenderer.invoke("home:show"),
+  hideHome: () => ipcRenderer.invoke("home:hide"),
 
   listExtensions: () => ipcRenderer.invoke("extensions:list"),
   addExtension: () => ipcRenderer.invoke("extensions:add"),
@@ -63,10 +68,13 @@ contextBridge.exposeInMainWorld("api", {
   onTabClosed: (handler) => on("tab:closed", handler),
   onInstallationIcon: (handler) => on("installation:icon", handler),
   onInstallationAddress: (handler) => on("installation:address", handler),
+  onInstallationMute: (handler) => on("installation:mute", handler),
   onSidebarChanged: (handler) => on("sidebar:changed", handler),
   onAddInstallationRequested: (handler) => on("menu:add-installation", handler),
+  onAddWebsiteRequested: (handler) => on("menu:add-website", handler),
   onSettingsRequested: (handler) => on("menu:settings", handler),
   onLockChanged: (handler) => on("lock:changed", handler),
+  onLockDeadline: (handler) => on("lock:deadline", handler),
   onExtensionActions: (handler) => on("extensions:actions", handler),
   onExtensionPopupClosed: (handler) => on("extensions:popup-closed", handler),
   onUpdateAvailable: (handler) => on("update:available", handler),

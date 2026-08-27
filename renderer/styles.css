@@ -42,34 +42,6 @@ button {
   font-family: inherit;
 }
 
-/* Onboarding */
-
-.onboarding {
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.onboarding-card {
-  width: 380px;
-  padding: 32px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  text-align: center;
-}
-
-.onboarding-card h1 {
-  margin: 0 0 8px;
-  font-size: 22px;
-}
-
-.subtitle {
-  color: var(--text-muted);
-  margin: 0 0 20px;
-}
-
 /* Forms */
 
 .installation-form {
@@ -164,7 +136,15 @@ button {
 
 .sidebar-header-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+
+/* The auto-lock countdown, when one is running; see setLockDeadline(). */
+.lock-countdown {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .brand {
@@ -462,15 +442,26 @@ button {
   transform: rotate(-90deg);
 }
 
-.group-count {
+.group-add-btn {
   flex-shrink: 0;
-  padding: 0 6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
   border-radius: 8px;
   background: var(--surface);
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-add-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .installation-block.collapsed .tab-tree {
@@ -537,6 +528,15 @@ button {
 .tab-row.active .tab-badge {
   background: #fff;
   color: var(--accent);
+}
+
+/* Sits where the badge would, so muting a noisy tab does not shift anything
+   else in the row. */
+.mute-indicator {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.6;
 }
 
 /* Update banner */
@@ -761,6 +761,29 @@ button {
 .settings-check input:disabled + span {
   opacity: 0.45;
   cursor: default;
+}
+
+.lock-timeout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.lock-timeout-row input[type="number"] {
+  width: 70px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.lock-timeout-row input:disabled {
+  opacity: 0.5;
 }
 
 .settings-actions {

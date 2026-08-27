@@ -1,7 +1,5 @@
 "use strict";
 
-const STATUS_DEFAULT = "Select or open an installation from the sidebar.";
-
 let installations = [];
 let tabs = [];
 let activeTabId = null;
@@ -27,6 +25,9 @@ function $(id) {
 /* ------------------------------------------------------------------ status */
 
 function setStatus(text, retry = null) {
+  // A transient message - connecting, a failed load - takes over the content
+  // area, so the home page underneath it has to step aside.
+  window.api.hideHome();
   $("status-text").textContent = text;
   statusRetryHandler = retry;
   $("status-retry-btn").classList.toggle("hidden", !retry);
@@ -36,6 +37,14 @@ function setStatus(text, retry = null) {
 function clearStatus() {
   $("status-panel").classList.add("hidden");
   statusRetryHandler = null;
+  window.api.hideHome();
+}
+
+/** The idle state: no tab open, nothing pending - the mvmOS home page shows instead. */
+function showDefaultStatus() {
+  statusRetryHandler = null;
+  $("status-panel").classList.add("hidden");
+  window.api.showHome();
 }
 
 /* ------------------------------------------------------------------ modals */
@@ -79,27 +88,32 @@ function confirmDialog({ title, message, okLabel = "Remove" }) {
   });
 }
 
-// One dialog serves both adding and editing; `editingId` decides which.
+// One dialog serves both adding and editing; `editingId` decides which. Which
+// kind is being added is fixed by which "+" button opened the dialog, since
+// there is one per kind rather than a select inside it - `editingType` is
+// what submitInstallationForm() reads when it saves.
 let editingId = null;
+let editingType = "mvmos";
 
 const TYPE_HINTS = {
   mvmos: "Opens the desktop and the public page of an mvmOS installation. Links to other sites go to your browser.",
   site: "Any website, opened in one tab that browses freely, the way a browser window would.",
 };
 
-function updateTypeHint() {
-  $("modal-type-hint").textContent = TYPE_HINTS[$("modal-type").value] || "";
-}
+const TYPE_LABELS = {
+  mvmos: "mvmOS installation",
+  site: "Website",
+};
 
-async function openInstallationModal(installation = null) {
+async function openInstallationModal(installation = null, fixedType = "mvmos") {
   editingId = installation ? installation.id : null;
-  $("installation-modal-title").textContent = installation ? "Edit installation" : "Add installation";
+  editingType = installation && installation.type === "site" ? "site" : (fixedType === "site" ? "site" : "mvmos");
+  $("installation-modal-title").textContent = `${installation ? "Edit" : "Add"} ${TYPE_LABELS[editingType]}`;
   $("modal-submit-btn").textContent = installation ? "Save" : "Add";
   $("modal-name").value = installation ? installation.name : "";
   $("modal-address").value = installation ? installation.address : "";
-  $("modal-type").value = installation && installation.type === "site" ? "site" : "mvmos";
+  $("modal-type-hint").textContent = TYPE_HINTS[editingType] || "";
   $("modal-remove-btn").classList.toggle("hidden", !installation);
-  updateTypeHint();
   $("modal-error").classList.add("hidden");
   await showModal("installation-modal");
   $("modal-address").focus();
@@ -210,7 +224,7 @@ function forgetTabs(removedIds) {
   tabs = tabs.filter((t) => !removedIds.has(t.id));
   if (activeTabId && removedIds.has(activeTabId)) {
     activeTabId = null;
-    setStatus(STATUS_DEFAULT);
+    showDefaultStatus();
   }
 }
 
@@ -262,14 +276,14 @@ async function submitInstallationForm(event) {
 
   try {
     if (editingId) {
-      const { installation, tabsClosed } = await window.api.updateInstallation(editingId, name, address, $("modal-type").value);
+      const { installation, tabsClosed } = await window.api.updateInstallation(editingId, name, address, editingType);
       const index = installations.findIndex((i) => i.id === editingId);
       if (index !== -1) installations[index] = installation;
       if (tabsClosed) {
         forgetTabs(new Set(tabs.filter((t) => t.installationId === editingId).map((t) => t.id)));
       }
     } else {
-      installations.push(await window.api.addInstallation(name, address, $("modal-type").value));
+      installations.push(await window.api.addInstallation(name, address, editingType));
     }
     await hideModal("installation-modal");
     renderApp();
@@ -296,6 +310,11 @@ async function persistOrder() {
  */
 const WEBSITES_UNIT = "__websites__";
 
+/*
+ * The Websites block is always present, even with nothing in it yet: it is
+ * the only place in the sidebar a website can be added from, so an install
+ * with no websites still needs it there to add the first one.
+ */
 function sidebarUnits() {
   const sites = installations.filter((i) => i.type === "site");
   const units = [];
@@ -309,6 +328,7 @@ function sidebarUnits() {
     }
     units.push({ id: installation.id, kind: "installation", installation });
   }
+  if (!websitesPlaced) units.push({ id: WEBSITES_UNIT, kind: "websites", sites });
   return units;
 }
 
@@ -376,6 +396,20 @@ function makeSiteIcon(icon, label) {
   return fallback;
 }
 
+/** The "+" that replaces the Websites group's old count - always visible, unlike the row actions. */
+function makeGroupAddButton(onClick, title) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "group-add-btn";
+  btn.textContent = "+";
+  btn.title = title;
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return btn;
+}
+
 function makeIconButton({ label, title, className, onClick, disabled = false }) {
   const btn = document.createElement("button");
   btn.className = `icon-btn subtle ${className || ""}`.trim();
@@ -434,6 +468,36 @@ function makeBadge(count) {
   return badgeEl;
 }
 
+// Kept in lockstep with the main process's own isMuted() via installation:mute
+// pushes, so the badge total and the tray/dock icon agree with what the row
+// shows without either side having to ask the other.
+function isMuted(installation) {
+  if (!installation) return false;
+  const until = installation.muteUntil;
+  if (until === "forever") return true;
+  return typeof until === "number" && Date.now() < until;
+}
+
+function makeMuteIndicator() {
+  const el = document.createElement("span");
+  el.className = "mute-indicator";
+  el.title = "Muted";
+  el.textContent = "🔕";
+  return el;
+}
+
+/*
+ * Right-clicking a sidebar row - rather than a page's own content, which has
+ * its own menu built in the main process - offers muting and, when the row has
+ * an open tab, reloading it.
+ */
+function attachRowContextMenu(row, installationId, tabId) {
+  row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    window.api.showRowContextMenu(installationId, tabId || null);
+  });
+}
+
 /*
  * Up/down for a row that has somewhere to go. `move` gets the direction; the
  * buttons are only added when there is more than one row to shuffle.
@@ -454,6 +518,7 @@ function renderTabRow(tab, depth, installation) {
   // The whole row, not just the text: clicking the padding at either end used
   // to highlight the row and then do nothing.
   row.addEventListener("click", () => switchToTab(tab.id));
+  attachRowContextMenu(row, tab.installationId, tab.id);
 
   const { label: withoutBadge, badge } = parseBadge(tab.title);
   const { emoji, label: withoutEmoji } = splitEmoji(withoutBadge);
@@ -466,7 +531,8 @@ function renderTabRow(tab, depth, installation) {
   label.textContent = icon.usedEmoji ? withoutEmoji : withoutBadge;
   row.appendChild(label);
 
-  if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
+  if (isMuted(installation)) row.appendChild(makeMuteIndicator());
+  else if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
 
   const siblings = siblingsOf(tab);
   appendMoveButtons(row, {
@@ -584,6 +650,7 @@ function renderWebsiteRow(site, index, total) {
   row.className = "tab-row" + (rootTab && rootTab.id === activeTabId ? " active" : "");
   row.title = site.address;
   row.addEventListener("click", () => openOrSwitch(site.id, "site"));
+  attachRowContextMenu(row, site.id, rootTab ? rootTab.id : null);
 
   row.appendChild(makeSiteIcon(site.icon, site.name));
 
@@ -594,7 +661,9 @@ function renderWebsiteRow(site, index, total) {
   label.textContent = site.name;
   row.appendChild(label);
 
-  if (rootTab) {
+  const muted = isMuted(site);
+  if (muted) row.appendChild(makeMuteIndicator());
+  else if (rootTab) {
     const { badge } = parseBadge(rootTab.title || "");
     if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
   }
@@ -640,10 +709,7 @@ function renderWebsitesGroup(sites, index, total) {
   nameSpan.textContent = "Websites";
   header.appendChild(nameSpan);
 
-  const count = document.createElement("span");
-  count.className = "group-count";
-  count.textContent = String(sites.length);
-  header.appendChild(count);
+  header.appendChild(makeGroupAddButton(() => openInstallationModal(null, "site"), "Add website"));
 
   appendMoveButtons(header, { index, total, move: (delta) => moveUnit(WEBSITES_UNIT, delta) });
 
@@ -774,6 +840,7 @@ function drawTrayIcon(count) {
 function updateAppBadge() {
   let total = 0;
   for (const tab of tabs) {
+    if (isMuted(installations.find((i) => i.id === tab.installationId))) continue;
     const { badge } = parseBadge(tab.title || "");
     if (badge && badge > 0) total += badge;
   }
@@ -786,17 +853,8 @@ function updateAppBadge() {
 }
 
 function renderApp() {
-  const onboardingEl = $("onboarding");
-  const shellEl = $("shell");
-  if (installations.length === 0) {
-    onboardingEl.classList.remove("hidden");
-    shellEl.classList.add("hidden");
-    return;
-  }
-  onboardingEl.classList.add("hidden");
-  shellEl.classList.remove("hidden");
   renderSidebar();
-  if (!activeTabId) setStatus(STATUS_DEFAULT);
+  if (!activeTabId) showDefaultStatus();
 }
 
 /* ------------------------------------------------------------------ update */
@@ -936,9 +994,52 @@ async function lockFromHeader() {
   await window.api.lockNow();
 }
 
+/* ------------------------------------------------------------- auto-lock */
+
+// >= 1h: "5h30m". Under an hour: whole minutes, "15m". Under a minute: real
+// seconds, "20s" - the three granularities the user actually cares about, in
+// decreasing order of how precisely they need to be shown.
+function formatCountdown(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  if (totalSeconds >= 3600) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    return `${hours}h${minutes}m`;
+  }
+  if (totalSeconds >= 60) return `${Math.floor(totalSeconds / 60)}m`;
+  return `${totalSeconds}s`;
+}
+
+let lockDeadline = null;
+let countdownTimer = null;
+
+function updateCountdownDisplay() {
+  const el = $("lock-countdown");
+  if (!lockDeadline) {
+    el.classList.add("hidden");
+    return;
+  }
+  const remaining = lockDeadline - Date.now();
+  if (remaining <= 0) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.textContent = formatCountdown(remaining);
+  el.classList.remove("hidden");
+}
+
+/** `deadline` is an epoch ms from the main process, or null while auto-lock is off. */
+function setLockDeadline(deadline) {
+  lockDeadline = typeof deadline === "number" ? deadline : null;
+  updateCountdownDisplay();
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = lockDeadline ? setInterval(updateCountdownDisplay, 1000) : null;
+}
+
 /* --------------------------------------------------------------- settings */
 
 let hasPin = false;
+let autoLockState = { lockTimeoutMinutes: 0, lockResetOnActivity: true };
 
 function renderPinSection() {
   $("pin-status").textContent = hasPin
@@ -953,6 +1054,29 @@ function renderPinSection() {
   $("pin-current").value = "";
   $("pin-new").value = "";
   renderLockButton();
+  renderAutoLockSection();
+}
+
+/*
+ * 0 means off, and only means anything with a PIN behind it - so the fields
+ * are simply disabled without one, rather than refusing to save a value that
+ * would otherwise just sit there unused.
+ */
+function renderAutoLockSection() {
+  $("lock-timeout-minutes").disabled = !hasPin;
+  $("lock-reset-activity").disabled = !hasPin;
+  $("lock-timeout-minutes").value = autoLockState.lockTimeoutMinutes || 0;
+  $("lock-reset-activity").checked = autoLockState.lockResetOnActivity !== false;
+  $("lock-timeout-hint").textContent = hasPin
+    ? "0 means never. Off: locks exactly this many minutes after unlocking, whatever you do meanwhile. On: locks only after this many minutes with no activity in the app."
+    : "Set a PIN first.";
+}
+
+async function saveAutoLockSettings() {
+  const minutes = Math.max(0, parseInt($("lock-timeout-minutes").value, 10) || 0);
+  const resetOnActivity = $("lock-reset-activity").checked;
+  autoLockState = await window.api.setLockTimeout(minutes, resetOnActivity);
+  renderAutoLockSection();
 }
 
 /* ------------------------------------------------------------------- tray */
@@ -1096,6 +1220,7 @@ function applyExtensionResult(result) {
 async function openSettings() {
   const state = await window.api.lockState();
   hasPin = state.hasPin;
+  autoLockState = { lockTimeoutMinutes: state.lockTimeoutMinutes, lockResetOnActivity: state.lockResetOnActivity };
   renderPinSection();
   trayState = await window.api.trayState();
   renderTraySection();
@@ -1137,36 +1262,7 @@ async function removePin() {
 function wireHandlers() {
   $("status-retry-btn").addEventListener("click", () => statusRetryHandler && statusRetryHandler());
 
-  $("onboarding-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const errorEl = $("onboarding-error");
-    const submitBtn = event.target.querySelector('button[type="submit"]');
-    errorEl.classList.add("hidden");
-    const originalLabel = submitBtn.textContent;
-    submitBtn.disabled = true;
-    submitBtn.textContent = "Checking…";
-    try {
-      installations.push(
-        await window.api.addInstallation(
-          $("onboarding-name").value,
-          $("onboarding-address").value,
-          $("onboarding-type").value,
-        ),
-      );
-      $("onboarding-name").value = "";
-      $("onboarding-address").value = "";
-      renderApp();
-    } catch (e) {
-      errorEl.textContent = cleanError(e);
-      errorEl.classList.remove("hidden");
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = originalLabel;
-    }
-  });
-
-  $("modal-type").addEventListener("change", updateTypeHint);
-  $("add-installation-btn").addEventListener("click", () => openInstallationModal(null));
+  $("add-installation-btn").addEventListener("click", () => openInstallationModal(null, "mvmos"));
   $("hide-sidebar-btn").addEventListener("click", () => window.api.setSidebarVisible(false));
   $("modal-cancel-btn").addEventListener("click", () => hideModal("installation-modal"));
   $("installation-form").addEventListener("submit", submitInstallationForm);
@@ -1194,6 +1290,9 @@ function wireHandlers() {
   $("tray-show").addEventListener("change", saveTraySettings);
   $("tray-close").addEventListener("change", saveTraySettings);
 
+  $("lock-timeout-minutes").addEventListener("change", saveAutoLockSettings);
+  $("lock-reset-activity").addEventListener("change", saveAutoLockSettings);
+
   $("lock-now-btn").addEventListener("click", lockFromHeader);
   $("site-link-btn").addEventListener("click", () => window.api.openExternal("https://mvmos.org"));
 
@@ -1212,7 +1311,8 @@ function wireHandlers() {
 
   wireDragAndDrop();
 
-  window.api.onAddInstallationRequested(() => openInstallationModal(null));
+  window.api.onAddInstallationRequested(() => openInstallationModal(null, "mvmos"));
+  window.api.onAddWebsiteRequested(() => openInstallationModal(null, "site"));
   window.api.onSettingsRequested(() => openSettings());
   window.api.onExtensionActions((actions) => setExtensionActions(actions));
   window.api.onExtensionPopupClosed(() => {
@@ -1220,6 +1320,7 @@ function wireHandlers() {
     renderExtensionBar();
   });
   window.api.onLockChanged((value) => showLockScreen(value));
+  window.api.onLockDeadline((deadline) => setLockDeadline(deadline));
 
   window.api.onSidebarChanged((visible) => {
     sidebarVisible = visible;
@@ -1256,6 +1357,14 @@ function wireHandlers() {
     renderSidebar();
   });
 
+  window.api.onInstallationMute(({ id, muteUntil }) => {
+    const installation = installations.find((i) => i.id === id);
+    if (!installation) return;
+    if (muteUntil) installation.muteUntil = muteUntil;
+    else delete installation.muteUntil;
+    renderSidebar();
+  });
+
   window.api.onUpdateAvailable(showUpdateBanner);
   window.api.onUpdateNone(({ version }) => showUpToDateBanner(version));
 
@@ -1287,6 +1396,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const lockState = await window.api.lockState();
   hasPin = lockState.hasPin;
   renderLockButton();
+  setLockDeadline(lockState.deadline);
   if (lockState.locked) showLockScreen(true);
 
   setExtensionActions(await window.api.extensionActions());
