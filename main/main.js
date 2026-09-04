@@ -67,6 +67,10 @@ let quitting = false;
 
 /** tabId -> { view, info, origin, url, visible } */
 const tabs = new Map();
+/** tabId -> iconUrl most recently requested, so a slow reply can't overwrite a newer one */
+const pendingIconUrl = new Map();
+/** tabId -> Notifications the page raised since this tab was last looked at */
+const tabUnread = new Map();
 let activeTabId = null;
 let sidebarVisible = true;
 // Raised while the chrome shows a dialog of its own: the tab is hidden so the
@@ -127,6 +131,21 @@ function applyLayout() {
     if (shouldShowHome) homeView.setBounds(bounds);
     if (typeof homeView.setVisible === "function") homeView.setVisible(shouldShowHome);
   }
+  markActiveTabSeen();
+}
+
+/*
+ * The active tab only counts as "seen" once it is both the one on screen and
+ * the window has real focus - a tab switch made while the app sits unfocused
+ * in the background should not silently clear the badge before the user has
+ * actually looked at it.
+ */
+function markActiveTabSeen() {
+  if (!activeTabId || !win || win.isDestroyed() || !win.isFocused()) return;
+  if (overlayOpen || locked) return;
+  if (!tabUnread.get(activeTabId)) return;
+  tabUnread.set(activeTabId, 0);
+  win.webContents.send("tab:unread", { tabId: activeTabId, count: 0 });
 }
 
 /*
@@ -491,6 +510,8 @@ function destroyTab(tabId) {
     win.contentView.removeChildView(tab.view);
   }
   tabs.delete(tabId);
+  pendingIconUrl.delete(tabId);
+  tabUnread.delete(tabId);
   if (!tab.view.webContents.isDestroyed()) {
     tab.view.webContents.close();
   }
@@ -509,10 +530,19 @@ function tabContextMenu(tabId) {
   const tab = tabs.get(tabId);
   if (!tab) return;
   const wc = tab.view.webContents;
+  const installation = installations.find((i) => i.id === tab.info.installationId);
   Menu.buildFromTemplate([
     { label: "Back", enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
     { label: "Forward", enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
     { label: "Reload", click: () => wc.reload() },
+    // A page that navigates deep with no way back (an internal page with its own
+    // "back" disabled, an OAuth detour) still has an installation address it was
+    // opened with - this is a way back to it regardless of where the tab ended up.
+    {
+      label: "Home",
+      enabled: Boolean(installation),
+      click: () => { if (installation) wc.loadURL(startUrlFor(installation, tab.info.kind)); },
+    },
     { type: "separator" },
     {
       label: sidebarVisible ? "Hide sidebar" : "Show sidebar",
@@ -605,6 +635,15 @@ function showRowContextMenu({ installationId, tabId }) {
         if (tab && !tab.view.webContents.isDestroyed()) tab.view.webContents.reload();
       },
     },
+    {
+      label: "Home",
+      enabled: Boolean(tab),
+      click: () => {
+        if (tab && !tab.view.webContents.isDestroyed()) {
+          tab.view.webContents.loadURL(startUrlFor(installation, tab.info.kind));
+        }
+      },
+    },
     { type: "separator" },
     {
       label: sidebarVisible ? "Hide sidebar" : "Show sidebar",
@@ -633,6 +672,13 @@ function defaultTitleFor(installation, kind) {
 function installationIdForWebContents(wc) {
   for (const tab of tabs.values()) {
     if (tab.view.webContents === wc) return tab.info.installationId;
+  }
+  return null;
+}
+
+function tabIdForWebContents(wc) {
+  for (const [tabId, tab] of tabs) {
+    if (tab.view.webContents === wc) return tabId;
   }
   return null;
 }
@@ -765,7 +811,17 @@ function upgradeInstallationAddress(tab, navUrl) {
  * straight from the sidebar, in the installation's stored icon.
  */
 async function applyTabIcon(tabId, iconUrl) {
-  const dataUrl = await favicon.fetchIcon(iconUrl);
+  // page-favicon-updated fires because the page's own favicon changed - a site
+  // that flips a notification badge often does so at the very same URL, so the
+  // in-memory cache in favicon.js (meant for the one-off discover() lookups)
+  // has to be skipped here or the badge would never show up.
+  pendingIconUrl.set(tabId, iconUrl);
+  const dataUrl = await favicon.fetchIcon(iconUrl, { bypassCache: true });
+  // A site that flips its favicon back and forth (blinking a notification
+  // badge) can fire this twice before the first fetch returns; if a newer
+  // request has since been made for this tab, this reply is stale - applying
+  // it would flash the icon back to an outdated state.
+  if (pendingIconUrl.get(tabId) !== iconUrl) return;
   if (!dataUrl) return;
   const tab = tabs.get(tabId);
   if (!tab || !win || win.isDestroyed()) return;
@@ -1116,7 +1172,10 @@ function startAutoLockCountdown() {
     sendLockDeadline();
     return;
   }
-  autoLockDeadline = Date.now() + settings.lockTimeoutMinutes * 60000;
+  // -1000ms so the displayed countdown never touches the round minute the
+  // user picked - without it, IPC/render latency made it flicker between
+  // e.g. "30m" and "29m" on every activity reset.
+  autoLockDeadline = Date.now() + settings.lockTimeoutMinutes * 60000 - 1000;
   sendLockDeadline();
   autoLockTimer = setInterval(checkAutoLock, 1000);
 }
@@ -1132,7 +1191,7 @@ function noteActivity() {
   const now = Date.now();
   if (now - lastActivityNote < 2000) return;
   lastActivityNote = now;
-  autoLockDeadline = now + settings.lockTimeoutMinutes * 60000;
+  autoLockDeadline = now + settings.lockTimeoutMinutes * 60000 - 1000;
   sendLockDeadline();
 }
 
@@ -1287,6 +1346,7 @@ function createWindow() {
   win.on("focus", () => {
     win.flashFrame(false);
     noteActivity();
+    markActiveTabSeen();
   });
   win.webContents.on("input-event", () => noteActivity());
   // A window that is mapped again arrives in the task list as a new entry, so
@@ -1660,6 +1720,23 @@ ipcMain.on("tab:extension-icon", (event, rect) => {
   const tab = activeTabId ? tabs.get(activeTabId) : null;
   if (!tab || tab.view.webContents !== event.sender) return;
   openPopupForActiveTab(rect);
+});
+
+/*
+ * A tab's page raised a browser Notification - see tab-preload.js. Counted
+ * only while that tab is not the one actually being looked at, so switching
+ * to it clears the count instead of racing a notification that arrives at
+ * the same moment.
+ */
+ipcMain.on("tab:notification", (event) => {
+  const tabId = tabIdForWebContents(event.sender);
+  if (!tabId) return;
+  const seen = tabId === activeTabId && win && !win.isDestroyed() && win.isFocused()
+    && !overlayOpen && !locked;
+  if (seen) return;
+  const count = (tabUnread.get(tabId) || 0) + 1;
+  tabUnread.set(tabId, count);
+  if (win && !win.isDestroyed()) win.webContents.send("tab:unread", { tabId, count });
 });
 
 ipcMain.handle("extensions:menu", (_event, id) => {

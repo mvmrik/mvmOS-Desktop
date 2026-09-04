@@ -43,8 +43,8 @@ function mimeOf(res) {
   return "image/x-icon";
 }
 
-async function fetchIcon(iconUrl) {
-  if (cache.has(iconUrl)) return cache.get(iconUrl);
+async function fetchIcon(iconUrl, { bypassCache = false } = {}) {
+  if (!bypassCache && cache.has(iconUrl)) return cache.get(iconUrl);
   let result = null;
   try {
     const res = await httpGet(iconUrl, { maxBytes: MAX_ICON_BYTES });

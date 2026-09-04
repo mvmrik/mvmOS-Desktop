@@ -19,6 +19,52 @@
 
 const { ipcRenderer } = require("electron");
 
+/*
+ * Element and most chat apps signal a new message only through the browser's
+ * own Notification API - the OS toast the user does see - and never put a
+ * count in <title> the way Gmail-style inboxes do, so the sidebar/taskbar
+ * badge (which only reads titles) has nothing to show. This intercepts every
+ * Notification the page constructs and tells the main process, so it can
+ * count "unseen" per tab itself instead of depending on a title convention
+ * the site never followed.
+ *
+ * The override has to run in the page's own main world, not this preload's
+ * isolated one, or the page keeps talking to the real Notification and we
+ * never hear about it - hence the injected <script> and the postMessage
+ * bridge back out of it. A page with a strict script-src CSP (no
+ * 'unsafe-inline') will refuse to run the injected script, in which case this
+ * simply has no effect there; nothing else here depends on it.
+ */
+function installNotificationBridge() {
+  const inject = () => {
+    const script = document.createElement("script");
+    script.textContent = `(${String(() => {
+      const Original = window.Notification;
+      if (!Original || Original.__mvmosPatched) return;
+      function Patched(title, options) {
+        window.postMessage({ __mvmosNotification: true }, window.location.origin);
+        return new Original(title, options);
+      }
+      Patched.prototype = Original.prototype;
+      Patched.permission = Original.permission;
+      Patched.requestPermission = Original.requestPermission.bind(Original);
+      Patched.__mvmosPatched = true;
+      Object.defineProperty(window, "Notification", { value: Patched, writable: true, configurable: true });
+    })})();`;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove();
+  };
+  if (document.documentElement) inject();
+  else document.addEventListener("readystatechange", inject, { once: true });
+}
+installNotificationBridge();
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window || event.origin !== window.location.origin) return;
+  if (!event.data || event.data.__mvmosNotification !== true) return;
+  ipcRenderer.send("tab:notification");
+});
+
 // An affordance drawn on a field is icon-sized; anything bigger is page UI.
 const MAX_SIDE = 64;
 const MIN_SIDE = 8;

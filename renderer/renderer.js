@@ -188,6 +188,11 @@ function collectWithDescendants(tabId) {
 async function switchToTab(tabId) {
   await window.api.activateTab(tabId);
   activeTabId = tabId;
+  // The main process clears this too once it sees the tab is both active and
+  // focused, but doing it here as well means the badge does not sit stale for
+  // one IPC round trip after the click that was clearly meant to read it.
+  const tab = tabs.find((t) => t.id === tabId);
+  if (tab) tab.unread = 0;
   clearStatus();
   renderSidebar();
 }
@@ -520,7 +525,7 @@ function renderTabRow(tab, depth, installation) {
   row.addEventListener("click", () => switchToTab(tab.id));
   attachRowContextMenu(row, tab.installationId, tab.id);
 
-  const { label: withoutBadge, badge } = parseBadge(tab.title);
+  const { label: withoutBadge, badge: titleBadge } = parseBadge(tab.title);
   const { emoji, label: withoutEmoji } = splitEmoji(withoutBadge);
 
   const icon = makeTabIcon(tab, emoji, installation);
@@ -531,8 +536,13 @@ function renderTabRow(tab, depth, installation) {
   label.textContent = icon.usedEmoji ? withoutEmoji : withoutBadge;
   row.appendChild(label);
 
+  // Some sites put the count in <title> (Gmail-style); sites that instead only
+  // fire a Notification (Element, most chat apps) are counted by the main
+  // process and arrive on tab.unread - whichever one actually has something to
+  // say wins.
+  const badge = Math.max(titleBadge || 0, tab.unread || 0);
   if (isMuted(installation)) row.appendChild(makeMuteIndicator());
-  else if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
+  else if (badge > 0) row.appendChild(makeBadge(badge));
 
   const siblings = siblingsOf(tab);
   appendMoveButtons(row, {
@@ -664,8 +674,9 @@ function renderWebsiteRow(site, index, total) {
   const muted = isMuted(site);
   if (muted) row.appendChild(makeMuteIndicator());
   else if (rootTab) {
-    const { badge } = parseBadge(rootTab.title || "");
-    if (badge !== null && badge > 0) row.appendChild(makeBadge(badge));
+    const { badge: titleBadge } = parseBadge(rootTab.title || "");
+    const badge = Math.max(titleBadge || 0, rootTab.unread || 0);
+    if (badge > 0) row.appendChild(makeBadge(badge));
   }
 
   appendMoveButtons(row, { index, total, move: (delta) => moveWebsite(site.id, delta) });
@@ -836,13 +847,14 @@ function drawTrayIcon(count) {
   return canvas.toDataURL("image/png");
 }
 
-// The unread counts the open pages report in their own titles, added up.
+// The unread counts the open pages report - either in their own titles, or,
+// for pages that only ever fire a Notification (see tab.unread), from there.
 function updateAppBadge() {
   let total = 0;
   for (const tab of tabs) {
     if (isMuted(installations.find((i) => i.id === tab.installationId))) continue;
-    const { badge } = parseBadge(tab.title || "");
-    if (badge && badge > 0) total += badge;
+    const { badge: titleBadge } = parseBadge(tab.title || "");
+    total += Math.max(titleBadge || 0, tab.unread || 0);
   }
   if (TRAY_PLATFORM) loadAppIcon();
   if (total === lastBadgeCount) return;
@@ -1372,6 +1384,16 @@ function wireHandlers() {
     const tab = tabs.find((t) => t.id === tabId);
     if (!tab || !title) return;
     tab.title = title;
+    renderSidebar();
+  });
+
+  // Pages that never put a count in <title> (Element, most chat apps) still
+  // show up here - see tab-preload.js and the main process's tab:notification
+  // handler, which count the page's own Notification calls instead.
+  window.api.onTabUnread(({ tabId, count }) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    tab.unread = count;
     renderSidebar();
   });
 

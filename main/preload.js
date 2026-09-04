@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld("api", {
   onNewChildTab: (handler) => on("tab:new-child", handler),
   onTabTitle: (handler) => on("tab:title", handler),
   onTabIcon: (handler) => on("tab:icon", handler),
+  onTabUnread: (handler) => on("tab:unread", handler),
   onTabFailed: (handler) => on("tab:failed", handler),
   onTabClosed: (handler) => on("tab:closed", handler),
   onInstallationIcon: (handler) => on("installation:icon", handler),
