@@ -18,8 +18,12 @@ contextBridge.exposeInMainWorld("api", {
   platform: process.platform,
 
   listInstallations: () => ipcRenderer.invoke("installations:list"),
-  addInstallation: (name, address, type) => ipcRenderer.invoke("installations:add", { name, address, type }),
-  updateInstallation: (id, name, address, type) => ipcRenderer.invoke("installations:update", { id, name, address, type }),
+  addInstallation: (name, address, type, titleBadge) => (
+    ipcRenderer.invoke("installations:add", { name, address, type, titleBadge })
+  ),
+  updateInstallation: (id, name, address, type, titleBadge) => (
+    ipcRenderer.invoke("installations:update", { id, name, address, type, titleBadge })
+  ),
   removeInstallation: (id) => ipcRenderer.invoke("installations:remove", id),
   reorderInstallations: (orderedIds) => ipcRenderer.invoke("installations:reorder", orderedIds),
   checkReachable: (address) => ipcRenderer.invoke("installations:reachable", address),

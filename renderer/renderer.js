@@ -105,6 +105,22 @@ const TYPE_LABELS = {
   site: "Website",
 };
 
+const TITLE_BADGE_SYMBOLS = ["*", "●", "•", "!", "🔴"];
+
+function titleBadgeSettings(installation) {
+  if (!installation || installation.type !== "site") return { number: true, symbols: [] };
+  const saved = installation.titleBadge && typeof installation.titleBadge === "object"
+    ? installation.titleBadge
+    : {};
+  return {
+    // Existing websites predate this setting and already recognise (N).
+    number: saved.number !== false,
+    symbols: Array.isArray(saved.symbols)
+      ? saved.symbols.filter((symbol) => TITLE_BADGE_SYMBOLS.includes(symbol))
+      : [],
+  };
+}
+
 async function openInstallationModal(installation = null, fixedType = "mvmos") {
   editingId = installation ? installation.id : null;
   editingType = installation && installation.type === "site" ? "site" : (fixedType === "site" ? "site" : "mvmos");
@@ -113,6 +129,12 @@ async function openInstallationModal(installation = null, fixedType = "mvmos") {
   $("modal-name").value = installation ? installation.name : "";
   $("modal-address").value = installation ? installation.address : "";
   $("modal-type-hint").textContent = TYPE_HINTS[editingType] || "";
+  const badgeSettings = titleBadgeSettings(installation || { type: editingType });
+  $("modal-title-badges").classList.toggle("hidden", editingType !== "site");
+  $("modal-badge-number").checked = badgeSettings.number;
+  for (const checkbox of document.querySelectorAll(".modal-badge-symbol")) {
+    checkbox.checked = badgeSettings.symbols.includes(checkbox.value);
+  }
   $("modal-remove-btn").classList.toggle("hidden", !installation);
   $("modal-error").classList.add("hidden");
   await showModal("installation-modal");
@@ -273,6 +295,10 @@ async function submitInstallationForm(event) {
   const submitBtn = $("modal-submit-btn");
   const name = $("modal-name").value;
   const address = $("modal-address").value;
+  const titleBadge = editingType === "site" ? {
+    number: $("modal-badge-number").checked,
+    symbols: [...document.querySelectorAll(".modal-badge-symbol:checked")].map((checkbox) => checkbox.value),
+  } : null;
 
   errorEl.classList.add("hidden");
   const originalLabel = submitBtn.textContent;
@@ -281,14 +307,16 @@ async function submitInstallationForm(event) {
 
   try {
     if (editingId) {
-      const { installation, tabsClosed } = await window.api.updateInstallation(editingId, name, address, editingType);
+      const { installation, tabsClosed } = await window.api.updateInstallation(
+        editingId, name, address, editingType, titleBadge,
+      );
       const index = installations.findIndex((i) => i.id === editingId);
       if (index !== -1) installations[index] = installation;
       if (tabsClosed) {
         forgetTabs(new Set(tabs.filter((t) => t.installationId === editingId).map((t) => t.id)));
       }
     } else {
-      installations.push(await window.api.addInstallation(name, address, editingType));
+      installations.push(await window.api.addInstallation(name, address, editingType, titleBadge));
     }
     await hideModal("installation-modal");
     renderApp();
@@ -374,13 +402,39 @@ async function moveWebsite(id, delta) {
 
 /* ------------------------------------------------------------------ render */
 
-// A page can flag an unread count in its own <title>, e.g. "(5) Inbox" - that
-// count is shown as a badge instead of as part of the label text.
-function parseBadge(title) {
-  const match = title.match(/\((\d+)\)/);
-  if (!match || match.index === undefined) return { label: title, badge: null };
-  const label = (title.slice(0, match.index) + title.slice(match.index + match[0].length)).trim();
-  return { label: label || title, badge: parseInt(match[1], 10) };
+// Title markers are opt-in per website because the same punctuation can be
+// ordinary title text elsewhere. Symbols count as one unread item; a numeric
+// marker remains authoritative when both forms are present.
+function parseBadge(title, installation) {
+  const original = String(title || "");
+  let label = original;
+  let badge = null;
+  const settings = titleBadgeSettings(installation);
+
+  if (settings.number) {
+    const match = label.match(/\((\d+)\)/);
+    if (match && match.index !== undefined) {
+      badge = parseInt(match[1], 10);
+      label = label.slice(0, match.index) + label.slice(match.index + match[0].length);
+    }
+  }
+
+  for (const symbol of settings.symbols) {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // A status marker belongs at the start of a title or immediately before a
+    // title separator/end. This avoids treating expressions such as "2 * 3"
+    // as unread even on a site where the asterisk marker is enabled.
+    const marker = new RegExp(
+      `(^\\s*)${escaped}(?=\\s|$)|\\s+${escaped}(?=\\s*(?:[|—–-]|$))`,
+      "u",
+    );
+    if (!marker.test(label)) continue;
+    badge = Math.max(badge || 0, 1);
+    label = label.replace(marker, "$1");
+  }
+
+  label = label.replace(/\s{2,}/g, " ").trim();
+  return { label: label || original, badge };
 }
 
 /*
@@ -525,7 +579,7 @@ function renderTabRow(tab, depth, installation) {
   row.addEventListener("click", () => switchToTab(tab.id));
   attachRowContextMenu(row, tab.installationId, tab.id);
 
-  const { label: withoutBadge, badge: titleBadge } = parseBadge(tab.title);
+  const { label: withoutBadge, badge: titleBadge } = parseBadge(tab.title, installation);
   const { emoji, label: withoutEmoji } = splitEmoji(withoutBadge);
 
   const icon = makeTabIcon(tab, emoji, installation);
@@ -674,7 +728,7 @@ function renderWebsiteRow(site, index, total) {
   const muted = isMuted(site);
   if (muted) row.appendChild(makeMuteIndicator());
   else if (rootTab) {
-    const { badge: titleBadge } = parseBadge(rootTab.title || "");
+    const { badge: titleBadge } = parseBadge(rootTab.title || "", site);
     const badge = Math.max(titleBadge || 0, rootTab.unread || 0);
     if (badge > 0) row.appendChild(makeBadge(badge));
   }
@@ -852,8 +906,9 @@ function drawTrayIcon(count) {
 function updateAppBadge() {
   let total = 0;
   for (const tab of tabs) {
-    if (isMuted(installations.find((i) => i.id === tab.installationId))) continue;
-    const { badge: titleBadge } = parseBadge(tab.title || "");
+    const installation = installations.find((i) => i.id === tab.installationId);
+    if (isMuted(installation)) continue;
+    const { badge: titleBadge } = parseBadge(tab.title || "", installation);
     total += Math.max(titleBadge || 0, tab.unread || 0);
   }
   if (TRAY_PLATFORM) loadAppIcon();

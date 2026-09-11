@@ -102,6 +102,57 @@ button {
   margin: -4px 0 0;
 }
 
+.title-badge-settings {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.title-badge-settings legend {
+  padding: 0 5px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.title-badge-settings .form-hint {
+  margin: 0 0 10px;
+}
+
+.installation-form .badge-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.installation-form .badge-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.title-badge-symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.installation-form .title-badge-symbols .badge-option {
+  min-width: 30px;
+  justify-content: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 /* Shell layout */
 
 .shell {
@@ -629,6 +680,11 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
+}
+
+#installation-modal .modal-card {
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
 }
 
 .modal-card h2 {

@@ -1414,25 +1414,40 @@ async function runUpdateCheck(fromMenu = false) {
 
 ipcMain.handle("installations:list", () => installations);
 
-ipcMain.handle("installations:add", async (_event, { name, address, type }) => {
+const TITLE_BADGE_SYMBOLS = new Set(["*", "●", "•", "!", "🔴"]);
+
+function normalizeTitleBadge(type, value) {
+  if (type !== "site") return null;
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    number: input.number !== false,
+    symbols: Array.isArray(input.symbols)
+      ? [...new Set(input.symbols.filter((symbol) => TITLE_BADGE_SYMBOLS.has(symbol)))]
+      : [],
+  };
+}
+
+ipcMain.handle("installations:add", async (_event, { name, address, type, titleBadge }) => {
   const normalized = normalizeAddress(address);
   if (!(await isReachable(normalized))) {
     throw new Error(`Could not reach "${normalized}". Check the address and make sure the server is running.`);
   }
   const finalAddress = await upgradeScheme(normalized);
+  const installationType = type === "site" ? "site" : "mvmos";
   const installation = {
     id: randomUUID(),
     name: String(name || "").trim() || new URL(finalAddress).hostname,
     address: finalAddress,
-    type: type === "site" ? "site" : "mvmos",
+    type: installationType,
     icon: await favicon.discover(finalAddress),
   };
+  if (installationType === "site") installation.titleBadge = normalizeTitleBadge(installationType, titleBadge);
   installations.push(installation);
   store.save(installations);
   return installation;
 });
 
-ipcMain.handle("installations:update", async (_event, { id, name, address, type }) => {
+ipcMain.handle("installations:update", async (_event, { id, name, address, type, titleBadge }) => {
   const installation = installations.find((i) => i.id === id);
   if (!installation) throw new Error("Installation not found");
   const normalized = normalizeAddress(address);
@@ -1444,6 +1459,8 @@ ipcMain.handle("installations:update", async (_event, { id, name, address, type 
   installation.name = String(name || "").trim() || new URL(finalAddress).hostname;
   installation.address = finalAddress;
   installation.type = type === "site" ? "site" : "mvmos";
+  if (installation.type === "site") installation.titleBadge = normalizeTitleBadge(installation.type, titleBadge);
+  else delete installation.titleBadge;
   if (addressChanged) installation.icon = await favicon.discover(finalAddress);
   store.save(installations);
   // Open tabs still point at the old address, so they are closed rather than

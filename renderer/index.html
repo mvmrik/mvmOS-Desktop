@@ -87,6 +87,21 @@
             <input id="modal-address" type="text" placeholder="e.g. mvmos.example.com or 192.168.1.10:2026" autocomplete="off" required />
           </label>
           <p class="form-hint" id="modal-type-hint"></p>
+          <fieldset id="modal-title-badges" class="title-badge-settings hidden">
+            <legend>Unread badge from page title</legend>
+            <p class="form-hint">Enable only the markers this website uses for unread activity.</p>
+            <label class="badge-option">
+              <input id="modal-badge-number" type="checkbox" />
+              <span>Number in parentheses, such as (1)</span>
+            </label>
+            <div class="title-badge-symbols" aria-label="Unread symbol markers">
+              <label class="badge-option"><input class="modal-badge-symbol" type="checkbox" value="*" /> <span>*</span></label>
+              <label class="badge-option"><input class="modal-badge-symbol" type="checkbox" value="●" /> <span>●</span></label>
+              <label class="badge-option"><input class="modal-badge-symbol" type="checkbox" value="•" /> <span>•</span></label>
+              <label class="badge-option"><input class="modal-badge-symbol" type="checkbox" value="!" /> <span>!</span></label>
+              <label class="badge-option"><input class="modal-badge-symbol" type="checkbox" value="🔴" /> <span>🔴</span></label>
+            </div>
+          </fieldset>
           <p class="form-error hidden" id="modal-error"></p>
           <div class="modal-actions">
             <!-- Only while editing: a website row in the sidebar is one line
