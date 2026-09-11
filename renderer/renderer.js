@@ -409,12 +409,16 @@ function parseBadge(title, installation) {
   const original = String(title || "");
   let label = original;
   let badge = null;
+  let numericBadge = null;
   const settings = titleBadgeSettings(installation);
 
   if (settings.number) {
-    const match = label.match(/\((\d+)\)/);
+    // The one numeric option covers the bracket styles commonly used by page
+    // titles. Element, for example, uses (N) in some views and [N] in others.
+    const match = label.match(/\((\d+)\)|\[(\d+)\]|（(\d+)）|【(\d+)】/u);
     if (match && match.index !== undefined) {
-      badge = parseInt(match[1], 10);
+      numericBadge = parseInt(match.slice(1).find((value) => value !== undefined), 10);
+      badge = numericBadge;
       label = label.slice(0, match.index) + label.slice(match.index + match[0].length);
     }
   }
@@ -434,7 +438,20 @@ function parseBadge(title, installation) {
   }
 
   label = label.replace(/\s{2,}/g, " ").trim();
-  return { label: label || original, badge };
+  return { label: label || original, badge, numericBadge };
+}
+
+function unreadBadgeFor(tab, installation) {
+  const parsed = parseBadge(tab.title || "", installation);
+  // A real number in the page title is the site's current unread total. It is
+  // more reliable than counting Notification constructor calls, since a site
+  // may create or replace more than one OS notification for one message.
+  return {
+    label: parsed.label,
+    badge: parsed.numericBadge !== null
+      ? parsed.numericBadge
+      : Math.max(parsed.badge || 0, tab.unread || 0),
+  };
 }
 
 /*
@@ -579,7 +596,7 @@ function renderTabRow(tab, depth, installation) {
   row.addEventListener("click", () => switchToTab(tab.id));
   attachRowContextMenu(row, tab.installationId, tab.id);
 
-  const { label: withoutBadge, badge: titleBadge } = parseBadge(tab.title, installation);
+  const { label: withoutBadge, badge } = unreadBadgeFor(tab, installation);
   const { emoji, label: withoutEmoji } = splitEmoji(withoutBadge);
 
   const icon = makeTabIcon(tab, emoji, installation);
@@ -590,11 +607,8 @@ function renderTabRow(tab, depth, installation) {
   label.textContent = icon.usedEmoji ? withoutEmoji : withoutBadge;
   row.appendChild(label);
 
-  // Some sites put the count in <title> (Gmail-style); sites that instead only
-  // fire a Notification (Element, most chat apps) are counted by the main
-  // process and arrive on tab.unread - whichever one actually has something to
-  // say wins.
-  const badge = Math.max(titleBadge || 0, tab.unread || 0);
+  // A numeric title marker is the site's live total. Sites without one can
+  // still contribute unread activity through their Notification calls.
   if (isMuted(installation)) row.appendChild(makeMuteIndicator());
   else if (badge > 0) row.appendChild(makeBadge(badge));
 
@@ -728,8 +742,7 @@ function renderWebsiteRow(site, index, total) {
   const muted = isMuted(site);
   if (muted) row.appendChild(makeMuteIndicator());
   else if (rootTab) {
-    const { badge: titleBadge } = parseBadge(rootTab.title || "", site);
-    const badge = Math.max(titleBadge || 0, rootTab.unread || 0);
+    const { badge } = unreadBadgeFor(rootTab, site);
     if (badge > 0) row.appendChild(makeBadge(badge));
   }
 
@@ -814,33 +827,6 @@ function renderSidebar() {
 let lastBadgeCount = -1;
 
 /*
- * Windows puts a picture over the taskbar icon rather than a number, and the
- * main process has no canvas to draw one on - so the badge is drawn here and
- * sent across as a data URL. macOS and Linux only need the number itself.
- */
-function drawBadgeOverlay(count) {
-  const size = 32;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-
-  ctx.fillStyle = "#ff3b30";
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
-  ctx.fill();
-
-  const text = count > 99 ? "99+" : String(count);
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `bold ${text.length > 2 ? 14 : 20}px -apple-system, "Segoe UI", sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, size / 2, size / 2 + 1);
-  return canvas.toDataURL("image/png");
-}
-
-/*
  * Where there is a tray, the count goes on a whole icon rather than on a badge
  * laid over one: the app draws that icon itself, which is the point of it - on
  * Linux the panels are free to ignore the count the app reports and several do,
@@ -908,15 +894,13 @@ function updateAppBadge() {
   for (const tab of tabs) {
     const installation = installations.find((i) => i.id === tab.installationId);
     if (isMuted(installation)) continue;
-    const { badge: titleBadge } = parseBadge(tab.title || "", installation);
-    total += Math.max(titleBadge || 0, tab.unread || 0);
+    total += unreadBadgeFor(tab, installation).badge;
   }
   if (TRAY_PLATFORM) loadAppIcon();
   if (total === lastBadgeCount) return;
   lastBadgeCount = total;
-  const overlay = total > 0 && window.api.platform === "win32" ? drawBadgeOverlay(total) : null;
   const trayIcon = total > 0 && TRAY_PLATFORM ? drawTrayIcon(total) : null;
-  window.api.setBadge(total, overlay, trayIcon);
+  window.api.setBadge(total, trayIcon);
 }
 
 function renderApp() {

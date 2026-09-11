@@ -60,7 +60,7 @@ contextBridge.exposeInMainWorld("api", {
 
   setOverlay: (open) => ipcRenderer.invoke("chrome:overlay", open),
   setSidebarVisible: (visible) => ipcRenderer.invoke("chrome:sidebar", visible),
-  setBadge: (count, overlay, trayIcon) => ipcRenderer.invoke("chrome:badge", { count, overlay, trayIcon }),
+  setBadge: (count, trayIcon) => ipcRenderer.invoke("chrome:badge", { count, trayIcon }),
   appIcon: () => ipcRenderer.invoke("chrome:app-icon"),
   checkForUpdate: () => ipcRenderer.invoke("update:check"),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),

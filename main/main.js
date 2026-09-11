@@ -910,65 +910,46 @@ let lastBadgeCount = 0;
 // is already showing everywhere else.
 let lastTrayIcon = null;
 
-// Electron no longer implements its old Unity-specific badge helper on Linux,
-// while several current panels still understand that protocol. Sending the
-// signal ourselves also lets zero carry an explicit count-visible=false;
-// without it, some panels keep drawing the last non-zero value indefinitely.
+// Linux panels may retain a Unity badge sent by an older version even after
+// the application restarts. Clear that legacy state once, but never publish a
+// new count: desktop environments also mix in their own notification totals,
+// making the icon number disagree with the application's unread state.
 const LINUX_LAUNCHER_URI = "application://mvmos-desktop.desktop";
-let linuxBadgePending = null;
-let linuxBadgeSending = false;
+let linuxLauncherBadgeCleared = false;
 
-function flushLinuxLauncherBadge() {
-  if (linuxBadgePending === null) {
-    linuxBadgeSending = false;
-    return;
-  }
-  const total = linuxBadgePending;
-  linuxBadgePending = null;
-  linuxBadgeSending = true;
-  const properties = total > 0
-    ? `{'count': <int64 ${total}>, 'count-visible': <true>}`
-    : "{'count': <int64 0>, 'count-visible': <false>}";
+function clearLinuxLauncherBadge() {
+  if (process.platform !== "linux" || linuxLauncherBadgeCleared) return;
+  linuxLauncherBadgeCleared = true;
   execFile("gdbus", [
     "emit",
     "--session",
     "--object-path", "/com/canonical/unity/launcherentry",
     "--signal", "com.canonical.Unity.LauncherEntry.Update",
     LINUX_LAUNCHER_URI,
-    properties,
-  ], { timeout: 3000, windowsHide: true }, () => flushLinuxLauncherBadge());
-}
-
-function setLinuxLauncherBadge(count) {
-  if (process.platform !== "linux") return;
-  linuxBadgePending = count > 0 ? Math.floor(count) : 0;
-  if (!linuxBadgeSending) flushLinuxLauncherBadge();
+    "{'count': <int64 0>, 'count-visible': <false>}",
+  ], { timeout: 3000, windowsHide: true }, () => {});
 }
 
 /*
- * A tab whose page reports unread items puts the total on the app's own icon.
- * macOS and the Linux desktops that implement the Unity protocol take a plain
- * number; Windows wants a picture, which the chrome renderer draws for us,
- * since only it has a canvas to draw on.
+ * A tab whose page reports unread items puts the total in the tray and window
+ * title. macOS also uses its Dock badge because this app deliberately has no
+ * menu-bar status icon there.
  *
- * Not every Linux panel implements the Unity protocol, and the ones that do
- * only look up the badge by the .desktop file the app was launched from - so a
- * build started from a terminal has no icon to draw on at all. Two things work
- * everywhere instead, and both are done alongside the badge: the count goes in
- * front of the window title, which every task list shows, and the taskbar entry
- * is flashed when the count goes up while the window is not the one in front.
+ * Linux and Windows taskbar numbers are intentionally disabled. Linux desktops
+ * can combine launcher state with OS notification history, while a Windows
+ * overlay duplicates the tray; both can therefore show a different number
+ * from the page. The taskbar entry still flashes when new activity arrives.
  */
-function applyBadge(count, overlayDataUrl, trayDataUrl) {
+function applyBadge(count, trayDataUrl) {
   if (!app.isReady()) return;
   const total = count > 0 ? count : 0;
 
   if (process.platform === "win32" && win && !win.isDestroyed()) {
-    const image = total > 0 && overlayDataUrl ? nativeImage.createFromDataURL(overlayDataUrl) : null;
-    win.setOverlayIcon(image, total > 0 ? `${total} unread` : "");
+    win.setOverlayIcon(null, "");
   } else if (process.platform === "darwin") {
     app.setBadgeCount(total);
   } else if (process.platform === "linux") {
-    setLinuxLauncherBadge(total);
+    clearLinuxLauncherBadge();
   }
   lastTrayIcon = total > 0 ? trayDataUrl || null : null;
   applyTrayBadge(total, lastTrayIcon);
@@ -981,59 +962,11 @@ function applyBadge(count, overlayDataUrl, trayDataUrl) {
     if (total === 0) win.flashFrame(false);
   }
   lastBadgeCount = total;
-  scheduleBadgeReassert(total);
-}
-
-/*
- * The Unity protocol is a broadcast with no state behind it: the panel keeps
- * what it last heard, and anything that rebuilds its task model - the panel
- * restarting, the window being remapped, the entry being matched to a launcher
- * only after the fact - leaves it with nothing, while we sit there believing
- * we have already said it. The count then quietly falls off the icon although
- * the title still carries it.
- *
- * So on Linux, while there is a count to show, it is said again every so often
- * and whenever the window itself is mapped anew. Saying it twice costs a signal
- * nobody reads; saying it once costs the badge. The macOS dock tile and the
- * Windows taskbar overlay are both properties that stay set until they are
- * changed, so there is nothing to repeat there.
- */
-let badgeTimer = null;
-
-/*
- * The highlight stays lit until the window is looked at, rather than fading on
- * its own after a while. It is the only part of "something arrived" that can be
- * relied on to appear: the count is a request the launcher may refuse, so a
- * highlight that had already faded would leave an unread message showing
- * nowhere but in the window title.
- *
- * Which colour it is drawn in is the window manager's to choose - flashFrame
- * only raises the window's urgency flag, and every desktop paints that its own
- * way - and so is when it goes out, since some of them clear it on focus and
- * on nothing else.
- */
-function scheduleBadgeReassert(total) {
-  if (badgeTimer) clearInterval(badgeTimer);
-  badgeTimer = null;
-  if (process.platform !== "linux" || total <= 0) return;
-  badgeTimer = setInterval(() => reassertBadge(), 15000);
-}
-
-function reassertBadge() {
-  if (process.platform !== "linux") return;
-  if (lastBadgeCount <= 0 || !app.isReady()) return;
-  setLinuxLauncherBadge(lastBadgeCount);
 }
 
 /* ------------------------------------------------------------------- tray */
 
 /*
- * The count on the app's own icon is the launcher's to draw, and on Linux that
- * is a request rather than an instruction: the number is broadcast over the
- * Unity protocol and a panel is free to ignore it. Several do - the signal
- * goes out with the right name and the right number and simply lands nowhere,
- * which leaves an unread message visible in the window title and nowhere else.
- *
  * A status icon is the one place the app draws the pixels itself. It is asked
  * for, not matched by name against a desktop entry, so what it shows is what
  * the app put there.
@@ -1395,10 +1328,6 @@ function createWindow() {
     markActiveTabSeen();
   });
   win.webContents.on("input-event", () => noteActivity());
-  // A window that is mapped again arrives in the task list as a new entry, so
-  // whatever count it carried has to be said over; see reassertBadge().
-  win.on("show", () => reassertBadge());
-  win.on("restore", () => reassertBadge());
   win.on("maximize", persistSession);
   win.on("unmaximize", persistSession);
   win.on("close", (event) => {
@@ -1593,8 +1522,8 @@ ipcMain.handle("chrome:sidebar", (_event, visible) => setSidebarVisible(visible)
 ipcMain.handle("home:show", () => setHomeVisible(true));
 ipcMain.handle("home:hide", () => setHomeVisible(false));
 
-ipcMain.handle("chrome:badge", (_event, { count, overlay, trayIcon }) =>
-  applyBadge(Number(count) || 0, overlay, trayIcon)
+ipcMain.handle("chrome:badge", (_event, { count, trayIcon }) =>
+  applyBadge(Number(count) || 0, trayIcon)
 );
 // The chrome renderer draws the count into the icon and needs the icon itself
 // to draw on; the main process is the only side that can read it off disk.
