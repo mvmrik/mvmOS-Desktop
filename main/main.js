@@ -28,6 +28,7 @@ const {
 } = require("electron");
 const path = require("node:path");
 const { randomUUID, randomBytes, scryptSync, timingSafeEqual } = require("node:crypto");
+const { execFile } = require("node:child_process");
 
 const store = require("./store");
 const favicon = require("./favicon");
@@ -234,11 +235,19 @@ function closeExtensionPopup() {
 function placeExtensionPopup(anchor, size) {
   if (!win || win.isDestroyed() || !extensionPopup) return;
   const content = win.getContentBounds();
-  const left = (sidebarVisible ? SIDEBAR_WIDTH : 0) + 4;
+  const besideSidebar = (sidebarVisible ? SIDEBAR_WIDTH : 0) + 4;
+  const requestedWidth = Math.min(Math.max(Math.round(size.width), 160), POPUP_MAX.width);
+  const roomBesideSidebar = content.width - besideSidebar - 8;
+  // A popup normally leaves the tab list visible. On a narrower window that
+  // unnecessarily squeezed a 680px popup even when the whole window had room
+  // for it. In that case it floats over part of the sidebar and keeps its
+  // requested width; only the actual window edge is allowed to shrink it.
+  const left = sidebarVisible && requestedWidth > roomBesideSidebar ? 8 : besideSidebar;
   const available = Math.max(content.width - left - 8, 160);
-  const width = Math.min(Math.max(Math.round(size.width), 160), POPUP_MAX.width, available);
+  const width = Math.min(requestedWidth, available);
   const height = Math.min(Math.max(Math.round(size.height), 80), POPUP_MAX.height, Math.max(content.height - 16, 80));
-  const x = Math.max(left, Math.min(anchor.x + anchor.width + 4, content.width - width - 8));
+  const preferredX = left === besideSidebar ? anchor.x + anchor.width + 4 : content.width - width - 8;
+  const x = Math.max(left, Math.min(preferredX, content.width - width - 8));
   const y = Math.max(8, Math.min(anchor.y, content.height - height - 8));
   extensionPopup.view.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
 }
@@ -901,6 +910,41 @@ let lastBadgeCount = 0;
 // is already showing everywhere else.
 let lastTrayIcon = null;
 
+// Electron no longer implements its old Unity-specific badge helper on Linux,
+// while several current panels still understand that protocol. Sending the
+// signal ourselves also lets zero carry an explicit count-visible=false;
+// without it, some panels keep drawing the last non-zero value indefinitely.
+const LINUX_LAUNCHER_URI = "application://mvmos-desktop.desktop";
+let linuxBadgePending = null;
+let linuxBadgeSending = false;
+
+function flushLinuxLauncherBadge() {
+  if (linuxBadgePending === null) {
+    linuxBadgeSending = false;
+    return;
+  }
+  const total = linuxBadgePending;
+  linuxBadgePending = null;
+  linuxBadgeSending = true;
+  const properties = total > 0
+    ? `{'count': <int64 ${total}>, 'count-visible': <true>}`
+    : "{'count': <int64 0>, 'count-visible': <false>}";
+  execFile("gdbus", [
+    "emit",
+    "--session",
+    "--object-path", "/com/canonical/unity/launcherentry",
+    "--signal", "com.canonical.Unity.LauncherEntry.Update",
+    LINUX_LAUNCHER_URI,
+    properties,
+  ], { timeout: 3000, windowsHide: true }, () => flushLinuxLauncherBadge());
+}
+
+function setLinuxLauncherBadge(count) {
+  if (process.platform !== "linux") return;
+  linuxBadgePending = count > 0 ? Math.floor(count) : 0;
+  if (!linuxBadgeSending) flushLinuxLauncherBadge();
+}
+
 /*
  * A tab whose page reports unread items puts the total on the app's own icon.
  * macOS and the Linux desktops that implement the Unity protocol take a plain
@@ -921,8 +965,10 @@ function applyBadge(count, overlayDataUrl, trayDataUrl) {
   if (process.platform === "win32" && win && !win.isDestroyed()) {
     const image = total > 0 && overlayDataUrl ? nativeImage.createFromDataURL(overlayDataUrl) : null;
     win.setOverlayIcon(image, total > 0 ? `${total} unread` : "");
-  } else {
+  } else if (process.platform === "darwin") {
     app.setBadgeCount(total);
+  } else if (process.platform === "linux") {
+    setLinuxLauncherBadge(total);
   }
   lastTrayIcon = total > 0 ? trayDataUrl || null : null;
   applyTrayBadge(total, lastTrayIcon);
@@ -976,7 +1022,7 @@ function scheduleBadgeReassert(total) {
 function reassertBadge() {
   if (process.platform !== "linux") return;
   if (lastBadgeCount <= 0 || !app.isReady()) return;
-  app.setBadgeCount(lastBadgeCount);
+  setLinuxLauncherBadge(lastBadgeCount);
 }
 
 /* ------------------------------------------------------------------- tray */
