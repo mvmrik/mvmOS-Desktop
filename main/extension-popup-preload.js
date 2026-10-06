@@ -84,6 +84,14 @@ function patchTabsQuery() {
   return true;
 }
 
+/*
+ * The popup shell asks for the active tab here first, and only falls back to
+ * chrome.tabs.query when this is missing (any real browser). The answer comes
+ * straight from the main process, which knows which tab is on screen, so it
+ * cannot be the popup itself the way Chromium's own list sometimes is.
+ */
+globalThis.__mvmosActiveTab = () => ipcRenderer.invoke("extension-popup:active-tab");
+
 // The extension APIs may be installed a moment after the preload's first run,
 // so it is tried again once the page context is up.
 if (!patchTabsQuery()) {

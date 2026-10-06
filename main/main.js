@@ -26,6 +26,7 @@ const {
   session: electronSession,
   shell,
 } = require("electron");
+const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID, randomBytes, scryptSync, timingSafeEqual } = require("node:crypto");
 const { execFile } = require("node:child_process");
@@ -57,6 +58,33 @@ const APP_ICON_PATH = path.join(__dirname, "..", "build", "tray.png");
 const POPUP_START = { width: 240, height: 120 };
 const POPUP_DEFAULT = { width: 360, height: 480 };
 const POPUP_MAX = { width: 800, height: 600 };
+
+/*
+ * An extension popup that opens narrow or does not know the site cannot be
+ * reproduced on demand, so each step of its life is written to
+ * popup-debug.log in the user data folder: when it opened, what it was told
+ * about the active tab, when and how big it reported itself, and what closed
+ * it. Only the site's host is written, never a full address. Times are
+ * milliseconds since the popup was opened.
+ */
+let popupLogStart = 0;
+function hostOf(url) {
+  try {
+    return new URL(url).host || "none";
+  } catch (_) {
+    return "none";
+  }
+}
+function popupLog(message) {
+  try {
+    const file = path.join(app.getPath("userData"), "popup-debug.log");
+    try {
+      if (fs.statSync(file).size > 400000) fs.writeFileSync(file, "");
+    } catch (_) {}
+    const t = popupLogStart ? Date.now() - popupLogStart : 0;
+    fs.appendFileSync(file, `${new Date().toISOString()} +${t}ms ${message}\n`);
+  } catch (_) {}
+}
 
 let win = null;
 let installations = [];
@@ -120,6 +148,7 @@ function applyLayout() {
   if (!win || win.isDestroyed()) return;
   // Anything that relays the views - a resize, a tab switch, the sidebar, the
   // lock - has moved the button the popup was pinned to, so it goes.
+  if (extensionPopup) popupLog("closed by applyLayout (resize, tab switch, sidebar or lock)");
   closeExtensionPopup();
   const bounds = contentBounds();
   for (const [id, tab] of tabs) {
@@ -258,13 +287,16 @@ function placeExtensionPopup(anchor, size) {
 function revealExtensionPopup(size) {
   if (!extensionPopup || extensionPopup.shown) return;
   extensionPopup.shown = true;
+  popupLog(`reveal at ${Math.round(size.width)}x${Math.round(size.height)} (${size === POPUP_DEFAULT ? "fallback timer, no size reported" : "size reported"})`);
   placeExtensionPopup(extensionPopup.anchor, size);
   const { view } = extensionPopup;
   if (typeof view.setVisible === "function") view.setVisible(true);
   view.webContents.focus();
   // Whatever the popup drew while it was hidden has not been measured yet.
   const remeasure = () => {
-    if (!view.webContents.isDestroyed()) view.webContents.send("extension-popup:measure");
+    // A popup closed before a timer fires has no webContents left at all.
+    const contents = view.webContents;
+    if (contents && !contents.isDestroyed()) contents.send("extension-popup:measure");
   };
   remeasure();
   setTimeout(remeasure, 400);
@@ -325,8 +357,9 @@ function openFindBar() {
   });
   const contents = tab.view.webContents;
   const onFound = (_event, result) => {
-    if (findBar && !view.webContents.isDestroyed()) {
-      view.webContents.send("find:result", { active: result.activeMatchOrdinal, matches: result.matches });
+    const bar = view.webContents;
+    if (findBar && bar && !bar.isDestroyed()) {
+      bar.send("find:result", { active: result.activeMatchOrdinal, matches: result.matches });
     }
   };
   contents.on("found-in-page", onFound);
@@ -361,6 +394,7 @@ ipcMain.on("find:close", (event) => {
 
 function openExtensionPopup(id, anchor) {
   const action = extensionActions.find((item) => item.id === id);
+  if (extensionPopup) popupLog("closed by opening another popup");
   closeExtensionPopup();
   if (!action || !action.popupUrl || !win || win.isDestroyed()) return false;
 
@@ -379,6 +413,15 @@ function openExtensionPopup(id, anchor) {
   });
   view.setBackgroundColor("#ffffff");
   extensionPopup = { id, view, anchor, shown: false };
+  popupLogStart = Date.now();
+  {
+    const active = activeTabId ? tabs.get(activeTabId) : null;
+    const activeUrl = active && !active.view.webContents.isDestroyed() ? active.view.webContents.getURL() : "";
+    popupLog(`open ${action.name} activeTab=${hostOf(activeUrl)} tabs=${tabs.size} focused=${win.isFocused()}`);
+  }
+  view.webContents.on("did-finish-load", () => popupLog("popup did-finish-load"));
+  view.webContents.on("did-fail-load", (_e, code, desc) => popupLog(`popup did-fail-load ${code} ${desc}`));
+  view.webContents.on("render-process-gone", (_e, details) => popupLog(`popup render-process-gone ${details.reason}`));
   win.contentView.addChildView(view);
   if (typeof view.setVisible === "function") view.setVisible(false);
   placeExtensionPopup(anchor, POPUP_START);
@@ -396,7 +439,10 @@ function openExtensionPopup(id, anchor) {
   // Clicking the page, the sidebar or another window is how a popup is
   // dismissed everywhere else.
   view.webContents.on("blur", () => {
-    if (extensionPopup && extensionPopup.view === view) closeExtensionPopup();
+    if (extensionPopup && extensionPopup.view === view) {
+      popupLog("closed by blur (popup lost focus)");
+      closeExtensionPopup();
+    }
   });
   // Links out of a popup ("open my vault") belong in a real window - the
   // extension's own pages in one of ours, everything else in the browser.
@@ -1864,8 +1910,12 @@ ipcMain.handle("extensions:menu", (_event, id) => {
  */
 ipcMain.handle("extension-popup:active-tab", () => {
   const tab = activeTabId ? tabs.get(activeTabId) : null;
-  if (!tab || tab.view.webContents.isDestroyed()) return null;
+  if (!tab || tab.view.webContents.isDestroyed()) {
+    popupLog("active tab asked: answered none");
+    return null;
+  }
   const contents = tab.view.webContents;
+  popupLog(`active tab asked: answered ${hostOf(contents.getURL())}`);
   // The address is answered from here, not from Chromium's extension system:
   // that one can be slow to know about a page, and a popup that asks which
   // site it is on must never be told "none" or be left waiting.
@@ -1918,6 +1968,7 @@ ipcMain.on("extension-popup:size", (event, size) => {
   const host = popupHost();
   if (!host || event.sender !== host || !extensionPopup) return;
   if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) return;
+  popupLog(`size reported ${Math.round(size.width)}x${Math.round(size.height)} shown=${extensionPopup.shown}`);
   if (!extensionPopup.shown) {
     clearTimeout(extensionPopup.settle);
     revealExtensionPopup(size);
@@ -1928,7 +1979,10 @@ ipcMain.on("extension-popup:size", (event, size) => {
 
 ipcMain.on("extension-popup:close", (event) => {
   const host = popupHost();
-  if (host && event.sender === host) closeExtensionPopup();
+  if (host && event.sender === host) {
+    popupLog("closed by the popup itself");
+    closeExtensionPopup();
+  }
 });
 
 ipcMain.handle("shell:open-external", (_event, url) => shell.openExternal(url));
