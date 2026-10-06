@@ -398,6 +398,17 @@ function openExtensionPopup(id, anchor) {
   closeExtensionPopup();
   if (!action || !action.popupUrl || !win || win.isDestroyed()) return false;
 
+  // A popup may reuse its worker's renderer, where neither Electron preload
+  // nor executeJavaScript is available. Deliver the selected tab with the
+  // document itself, before its scripts ask Chromium about keyboard focus.
+  const popupUrl = new URL(action.popupUrl);
+  const active = activeTabId ? tabs.get(activeTabId) : null;
+  const contents = active && !active.view.webContents.isDestroyed() ? active.view.webContents : null;
+  const activeUrl = contents ? contents.getURL() : "";
+  const hasSite = /^https?:/i.test(activeUrl);
+  popupUrl.searchParams.set("mvmos_tab_id", hasSite ? String(contents.id) : "0");
+  popupUrl.searchParams.set("mvmos_tab_url", hasSite ? activeUrl : "");
+
   const view = new WebContentsView({
     webPreferences: {
       session: electronSession.defaultSession,
@@ -421,9 +432,9 @@ function openExtensionPopup(id, anchor) {
   }
   view.webContents.on("did-finish-load", () => {
     popupLog("popup did-finish-load");
-    // The popup asks for the page behind it through __mvmosActiveTab, which
-    // its preload normally provides. Offer it from here too, in case the
-    // preload did not run; the popup waits briefly for it.
+    // Older popup shells can ask through the preload's __mvmosActiveTab.
+    // Offer it here too when this renderer supports Electron injection;
+    // the tab parameters above do not depend on this fallback succeeding.
     {
       const behind = activeTabId ? tabs.get(activeTabId) : null;
       const contents = behind && !behind.view.webContents.isDestroyed() ? behind.view.webContents : null;
@@ -461,7 +472,7 @@ function openExtensionPopup(id, anchor) {
   // The popup's first act is usually to ask its background worker something,
   // and a stopped worker never answers.
   extensions.wake(electronSession.defaultSession);
-  view.webContents.loadURL(action.popupUrl);
+  view.webContents.loadURL(popupUrl.href);
 
   // An extension page that never reports - one that fails to load, or whose
   // popup is an empty shell - still has to appear, or the click did nothing.
