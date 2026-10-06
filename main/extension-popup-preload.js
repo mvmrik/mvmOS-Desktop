@@ -57,10 +57,17 @@ function patchTabsQuery() {
     delete relaxed.windowId;
 
     const promise = (async () => {
-      const [all, activeId] = await Promise.all([queryAll(relaxed), ipcRenderer.invoke("extension-popup:active-tab")]);
+      // Chromium's own list can be slow or empty right after the popup opens;
+      // it is waited for only briefly and the main process answers regardless.
+      const listed = Promise.race([queryAll(relaxed), new Promise((resolve) => setTimeout(() => resolve([]), 1200))]);
+      const [all, active] = await Promise.all([listed, ipcRenderer.invoke("extension-popup:active-tab")]);
+      const activeId = active && typeof active === "object" ? active.id : -1;
       let tabs = all
         .filter((tab) => /^https?:/i.test(tab.url || ""))
         .map((tab) => ({ ...tab, active: tab.id === activeId, highlighted: tab.id === activeId, selected: tab.id === activeId }));
+      if (active && /^https?:/i.test(active.url || "") && !tabs.some((tab) => tab.id === activeId)) {
+        tabs.push({ id: active.id, url: active.url, title: active.title || "", index: 0, windowId: 1, active: true, highlighted: true, selected: true, pinned: false, incognito: false, status: "complete" });
+      }
       if (filter.active === true) tabs = tabs.filter((tab) => tab.active);
       if (filter.active === false) tabs = tabs.filter((tab) => !tab.active);
       return tabs;

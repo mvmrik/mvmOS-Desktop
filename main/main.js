@@ -132,6 +132,8 @@ function applyLayout() {
     if (shouldShowHome) homeView.setBounds(bounds);
     if (typeof homeView.setVisible === "function") homeView.setVisible(shouldShowHome);
   }
+  if (findBar && (findBar.tabId !== activeTabId || overlayOpen || locked)) closeFindBar();
+  else placeFindBar();
   markActiveTabSeen();
 }
 
@@ -266,7 +268,96 @@ function revealExtensionPopup(size) {
   };
   remeasure();
   setTimeout(remeasure, 400);
+  // A popup that was slow enough to be shown at its fallback size is measured
+  // again once it has surely finished loading, so it never stays cropped.
+  setTimeout(remeasure, 1500);
 }
+
+/* ------------------------------------------------------------------ find in page */
+
+const FIND_BAR = { width: 340, height: 38, margin: 8 };
+/** The open find bar: { view, tabId, contents, onFound } - at most one. */
+let findBar = null;
+
+function placeFindBar() {
+  if (!win || win.isDestroyed() || !findBar) return;
+  const content = contentBounds();
+  findBar.view.setBounds({
+    x: content.x + content.width - FIND_BAR.width - FIND_BAR.margin,
+    y: FIND_BAR.margin,
+    width: FIND_BAR.width,
+    height: FIND_BAR.height,
+  });
+}
+
+function closeFindBar() {
+  if (!findBar) return;
+  const { view, contents, onFound } = findBar;
+  findBar = null;
+  try {
+    if (contents && !contents.isDestroyed()) {
+      contents.removeListener("found-in-page", onFound);
+      contents.stopFindInPage("clearSelection");
+    }
+  } catch (_) {}
+  try {
+    if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
+    view.webContents.close();
+  } catch (_) {}
+}
+
+function openFindBar() {
+  const tab = activeTabId && tabs.get(activeTabId);
+  if (!tab || !win || win.isDestroyed() || locked) return;
+  if (findBar && findBar.tabId === activeTabId) {
+    findBar.view.webContents.focus();
+    findBar.view.webContents.send("find:open");
+    return;
+  }
+  closeFindBar();
+  const view = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, "find-preload.js"),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  const contents = tab.view.webContents;
+  const onFound = (_event, result) => {
+    if (findBar && !view.webContents.isDestroyed()) {
+      view.webContents.send("find:result", { active: result.activeMatchOrdinal, matches: result.matches });
+    }
+  };
+  contents.on("found-in-page", onFound);
+  findBar = { view, tabId: activeTabId, contents, onFound };
+  win.contentView.addChildView(view);
+  placeFindBar();
+  view.webContents.loadFile(path.join(__dirname, "find-bar.html"));
+  view.webContents.once("did-finish-load", () => {
+    if (!findBar || findBar.view !== view) return;
+    view.webContents.focus();
+    view.webContents.send("find:open");
+  });
+}
+
+ipcMain.on("find:search", (event, { text, forward, next }) => {
+  if (!findBar || event.sender !== findBar.view.webContents) return;
+  const contents = findBar.contents;
+  if (!contents || contents.isDestroyed()) return;
+  if (!text) {
+    contents.stopFindInPage("clearSelection");
+    return;
+  }
+  contents.findInPage(String(text), { forward: forward !== false, findNext: Boolean(next) });
+});
+
+ipcMain.on("find:close", (event) => {
+  if (!findBar || event.sender !== findBar.view.webContents) return;
+  const contents = findBar.contents;
+  closeFindBar();
+  if (contents && !contents.isDestroyed()) contents.focus();
+});
 
 function openExtensionPopup(id, anchor) {
   const action = extensionActions.find((item) => item.id === id);
@@ -1209,6 +1300,11 @@ function buildMenu() {
           click: () => setSidebarVisible(!sidebarVisible),
         },
         {
+          label: "Find in page…",
+          accelerator: "CmdOrCtrl+F",
+          click: () => openFindBar(),
+        },
+        {
           label: "Reload tab",
           accelerator: "CmdOrCtrl+R",
           click: () => {
@@ -1768,7 +1864,12 @@ ipcMain.handle("extensions:menu", (_event, id) => {
  */
 ipcMain.handle("extension-popup:active-tab", () => {
   const tab = activeTabId ? tabs.get(activeTabId) : null;
-  return tab && !tab.view.webContents.isDestroyed() ? tab.view.webContents.id : -1;
+  if (!tab || tab.view.webContents.isDestroyed()) return null;
+  const contents = tab.view.webContents;
+  // The address is answered from here, not from Chromium's extension system:
+  // that one can be slow to know about a page, and a popup that asks which
+  // site it is on must never be told "none" or be left waiting.
+  return { id: contents.id, url: contents.getURL(), title: contents.getTitle() };
 });
 
 /*
@@ -1858,6 +1959,10 @@ const GRANTED_PERMISSIONS = new Set([
   "midi",
   "midiSysex",
 ]);
+
+// Some sites (Proton Mail, for one) refuse a client whose user agent names
+// Electron, so pages see the plain Chrome string it is built on.
+app.userAgentFallback = app.userAgentFallback.replace(/\s(?:Electron|mvmos-desktop)\/\S+/gi, "");
 
 app.whenReady().then(async () => {
   installations = store.load();

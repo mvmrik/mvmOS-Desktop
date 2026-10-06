@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; font: 13px system-ui, sans-serif; color: #1f2328; overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 4px; height: 100%; box-sizing: border-box; padding: 0 6px; border: 1px solid #c9ced6; border-radius: 8px; }
+  input { flex: 1; min-width: 0; border: 0; outline: 0; font: inherit; background: transparent; color: inherit; }
+  .count { color: #6b7280; min-width: 54px; text-align: right; white-space: nowrap; }
+  button { border: 0; background: transparent; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; color: inherit; }
+  button:hover { background: #e5e7eb; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <input id="q" type="text" spellcheck="false" autocomplete="off">
+  <span class="count" id="count"></span>
+  <button id="prev" title="Previous (Shift+Enter)">&#9650;</button>
+  <button id="next" title="Next (Enter)">&#9660;</button>
+  <button id="close" title="Close (Esc)">&#10005;</button>
+</div>
+<script>
+  const q = document.getElementById("q");
+  const count = document.getElementById("count");
+  const go = (forward, next) => q.value ? window.find.search(q.value, forward, next) : (count.textContent = "", window.find.search("", true, false));
+  q.addEventListener("input", () => go(true, false));
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") go(!e.shiftKey, true);
+    else if (e.key === "Escape") window.find.close();
+  });
+  document.getElementById("next").onclick = () => go(true, true);
+  document.getElementById("prev").onclick = () => go(false, true);
+  document.getElementById("close").onclick = () => window.find.close();
+  window.find.onResult((r) => { count.textContent = q.value ? (r.matches ? r.active + "/" + r.matches : "0/0") : ""; });
+  window.find.onOpen(() => { q.focus(); q.select(); });
+</script>
+</body>
+</html>
