@@ -419,7 +419,40 @@ function openExtensionPopup(id, anchor) {
     const activeUrl = active && !active.view.webContents.isDestroyed() ? active.view.webContents.getURL() : "";
     popupLog(`open ${action.name} activeTab=${hostOf(activeUrl)} tabs=${tabs.size} focused=${win.isFocused()}`);
   }
-  view.webContents.on("did-finish-load", () => popupLog("popup did-finish-load"));
+  view.webContents.on("did-finish-load", () => {
+    popupLog("popup did-finish-load");
+    // The popup asks for the page behind it through __mvmosActiveTab, which
+    // its preload normally provides. Offer it from here too, in case the
+    // preload did not run; the popup waits briefly for it.
+    {
+      const behind = activeTabId ? tabs.get(activeTabId) : null;
+      const contents = behind && !behind.view.webContents.isDestroyed() ? behind.view.webContents : null;
+      const info = contents ? { id: contents.id, url: contents.getURL(), title: contents.getTitle() } : null;
+      view.webContents
+        .executeJavaScript(`if (typeof globalThis.__mvmosActiveTab !== "function") globalThis.__mvmosActiveTab = () => Promise.resolve(${JSON.stringify(info)});`)
+        .then(() => popupLog(`active tab offered by the app: ${hostOf(info && info.url)}`))
+        .catch((error) => popupLog(`active tab offer failed: ${error && error.message}`));
+    }
+    // The popup's own script reports its size, but if that script never ran
+    // the popup would wait for the fallback timer and open at a made-up size.
+    // So once the page is loaded the size is also read from here.
+    setTimeout(async () => {
+      if (!extensionPopup || extensionPopup.view !== view || extensionPopup.shown || view.webContents.isDestroyed()) return;
+      try {
+        const size = await view.webContents.executeJavaScript(
+          "({ width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) })"
+        );
+        if (size && Number.isFinite(size.width) && Number.isFinite(size.height) && extensionPopup && extensionPopup.view === view && !extensionPopup.shown) {
+          popupLog(`size read by the app itself ${Math.round(size.width)}x${Math.round(size.height)}`);
+          clearTimeout(extensionPopup.settle);
+          revealExtensionPopup(size);
+        }
+      } catch (error) {
+        popupLog(`size read by the app failed: ${error && error.message}`);
+      }
+    }, 250);
+  });
+  view.webContents.on("preload-error", (_e, file, error) => popupLog(`preload-error ${path.basename(file)}: ${error && error.message}`));
   view.webContents.on("did-fail-load", (_e, code, desc) => popupLog(`popup did-fail-load ${code} ${desc}`));
   view.webContents.on("render-process-gone", (_e, details) => popupLog(`popup render-process-gone ${details.reason}`));
   win.contentView.addChildView(view);
@@ -1962,6 +1995,15 @@ ipcMain.handle("extension-popup:open-url", (event, url) => {
     return true;
   }
   return false;
+});
+
+ipcMain.on("extension-popup:preload-alive", (event, href) => {
+  if (extensionPopup && event.sender === popupHost()) popupLog(`preload started in ${String(href).replace(/^(chrome-extension:\/\/)[a-z]+/, "$1…")}`);
+  else popupLog("preload started, but not in the open popup");
+});
+
+ipcMain.on("extension-popup:preload-error", (event, message) => {
+  if (extensionPopup && event.sender === popupHost()) popupLog(`preload step failed: ${String(message).slice(0, 200)}`);
 });
 
 ipcMain.on("extension-popup:size", (event, size) => {

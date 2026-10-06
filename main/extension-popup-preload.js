@@ -27,6 +27,23 @@
 
 const { ipcRenderer } = require("electron");
 
+/*
+ * Each part below is independent, and a popup that loses one of them must not
+ * lose the rest - above all the size report, without which the popup is shown
+ * at a fallback size. A part that throws is reported to the main process's log
+ * instead of ending the whole preload.
+ */
+function guard(name, fn) {
+  try {
+    return fn();
+  } catch (error) {
+    try {
+      ipcRenderer.send("extension-popup:preload-error", `${name}: ${error && error.message}`);
+    } catch (_) {}
+    return undefined;
+  }
+}
+
 function patchTabsQuery() {
   if (!globalThis.chrome || !chrome.tabs || typeof chrome.tabs.query !== "function") return false;
   if (chrome.tabs.query.__mvmosPatched) return true;
@@ -84,6 +101,9 @@ function patchTabsQuery() {
   return true;
 }
 
+// Tells the main process's log that this script started at all.
+guard("alive", () => ipcRenderer.send("extension-popup:preload-alive", String(location.href).slice(0, 80)));
+
 /*
  * The popup shell asks for the active tab here first, and only falls back to
  * chrome.tabs.query when this is missing (any real browser). The answer comes
@@ -94,10 +114,12 @@ globalThis.__mvmosActiveTab = () => ipcRenderer.invoke("extension-popup:active-t
 
 // The extension APIs may be installed a moment after the preload's first run,
 // so it is tried again once the page context is up.
-if (!patchTabsQuery()) {
-  process.once("loaded", patchTabsQuery);
-  document.addEventListener("DOMContentLoaded", patchTabsQuery, { once: true });
-}
+guard("tabs.query patch", () => {
+  if (!patchTabsQuery()) {
+    process.once("loaded", () => guard("tabs.query patch (loaded)", patchTabsQuery));
+    document.addEventListener("DOMContentLoaded", () => guard("tabs.query patch (DOM)", patchTabsQuery), { once: true });
+  }
+});
 
 /*
  * The callback form is what a manifest v2 extension uses and the promise form
@@ -148,12 +170,18 @@ function patchOpeners() {
   return done;
 }
 
-if (!patchOpeners()) {
-  process.once("loaded", patchOpeners);
-  document.addEventListener("DOMContentLoaded", patchOpeners, { once: true });
-}
+guard("openers patch", () => {
+  if (!patchOpeners()) {
+    process.once("loaded", () => guard("openers patch (loaded)", patchOpeners));
+    document.addEventListener("DOMContentLoaded", () => guard("openers patch (DOM)", patchOpeners), { once: true });
+  }
+});
 
 function reportSize() {
+  guard("size report", measureAndSend);
+}
+
+function measureAndSend() {
   const root = document.documentElement;
   const body = document.body;
   if (!root) return;
