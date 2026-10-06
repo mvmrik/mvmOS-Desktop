@@ -58,6 +58,7 @@ const APP_ICON_PATH = path.join(__dirname, "..", "build", "tray.png");
 const POPUP_START = { width: 240, height: 120 };
 const POPUP_DEFAULT = { width: 360, height: 480 };
 const POPUP_MAX = { width: 800, height: 600 };
+const POPUP_SIZE_MESSAGE = "mvmos-popup-size:";
 
 /*
  * An extension popup that opens narrow or does not know the site cannot be
@@ -297,12 +298,85 @@ function revealExtensionPopup(size) {
     // A popup closed before a timer fires has no webContents left at all.
     const contents = view.webContents;
     if (contents && !contents.isDestroyed()) contents.send("extension-popup:measure");
+    void measureExtensionPopup(view);
   };
   remeasure();
   setTimeout(remeasure, 400);
   // A popup that was slow enough to be shown at its fallback size is measured
   // again once it has surely finished loading, so it never stays cropped.
   setTimeout(remeasure, 1500);
+}
+
+function reportExtensionPopupSize(sender, size, fromChromium = false) {
+  if (!extensionPopup || sender !== popupHost()) return;
+  if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 0 || size.height <= 0) return;
+  // A viewport-based preload reading must not undo a smaller document width.
+  if (extensionPopup.chromiumSizing && !fromChromium) return;
+  if (fromChromium) extensionPopup.chromiumSizing = true;
+  popupLog(`size reported${fromChromium ? " by Chromium" : ""} ${Math.round(size.width)}x${Math.round(size.height)} shown=${extensionPopup.shown}`);
+  if (!extensionPopup.shown) {
+    clearTimeout(extensionPopup.settle);
+    revealExtensionPopup(size);
+    return;
+  }
+  placeExtensionPopup(extensionPopup.anchor, size);
+}
+
+// Serialized into the popup through Chromium, so this function is self-contained.
+function observePopupSize(channel) {
+  if (globalThis.__mvmosPopupMeasure) {
+    globalThis.__mvmosPopupMeasure();
+    return;
+  }
+  let previous = "";
+  const report = () => {
+    const root = document.documentElement;
+    const body = document.body;
+    if (!root) return;
+    const size = {
+      width: Math.max(root.getBoundingClientRect().width, body ? body.scrollWidth : 0, body ? body.offsetWidth : 0),
+      height: Math.max(root.scrollHeight, body ? body.scrollHeight : 0, body ? body.offsetHeight : 0),
+    };
+    const value = JSON.stringify(size);
+    if (value !== previous) {
+      previous = value;
+      console.debug(channel + value);
+    }
+  };
+  globalThis.__mvmosPopupMeasure = report;
+  if (typeof ResizeObserver === "function") {
+    const observer = new ResizeObserver(report);
+    observer.observe(document.documentElement);
+    if (document.body) observer.observe(document.body);
+  }
+  window.addEventListener("load", report);
+  report();
+}
+
+async function measureExtensionPopup(view) {
+  const popup = extensionPopup;
+  const contents = view.webContents;
+  if (!popup || popup.view !== view || popup.measuring || !contents || contents.isDestroyed()) return;
+  popup.measuring = true;
+  const debuggerClient = contents.debugger;
+  let attached = false;
+  try {
+    // Electron evaluation can hang in a renderer reused from a service worker.
+    // Chromium's protocol and console events still reach the host in that case.
+    if (!debuggerClient.isAttached()) {
+      debuggerClient.attach("1.3");
+      attached = true;
+    }
+    const result = await debuggerClient.sendCommand("Runtime.evaluate", {
+      expression: `(${observePopupSize.toString()})(${JSON.stringify(POPUP_SIZE_MESSAGE)});`,
+    });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+  } catch (error) {
+    if (extensionPopup === popup) popupLog(`Chromium measurement failed: ${error && error.message}`);
+  } finally {
+    if (attached && !contents.isDestroyed() && debuggerClient.isAttached()) debuggerClient.detach();
+    popup.measuring = false;
+  }
 }
 
 /* ------------------------------------------------------------------ find in page */
@@ -424,6 +498,16 @@ function openExtensionPopup(id, anchor) {
   });
   view.setBackgroundColor("#ffffff");
   extensionPopup = { id, view, anchor, shown: false };
+  view.webContents.on("console-message", (details) => {
+    if (!extensionPopup || extensionPopup.view !== view || details.frame !== view.webContents.mainFrame) return;
+    if (!details.message.startsWith(POPUP_SIZE_MESSAGE)) return;
+    try {
+      reportExtensionPopupSize(view.webContents, JSON.parse(details.message.slice(POPUP_SIZE_MESSAGE.length)), true);
+    } catch (_) {
+      // Unrelated or malformed page output cannot change the popup bounds.
+    }
+  });
+  view.webContents.on("dom-ready", () => { void measureExtensionPopup(view); });
   popupLogStart = Date.now();
   {
     const active = activeTabId ? tabs.get(activeTabId) : null;
@@ -432,6 +516,7 @@ function openExtensionPopup(id, anchor) {
   }
   view.webContents.on("did-finish-load", () => {
     popupLog("popup did-finish-load");
+    void measureExtensionPopup(view);
     // Older popup shells can ask through the preload's __mvmosActiveTab.
     // Offer it here too when this renderer supports Electron injection;
     // the tab parameters above do not depend on this fallback succeeding.
@@ -2032,16 +2117,7 @@ ipcMain.on("extension-popup:preload-error", (event, message) => {
 });
 
 ipcMain.on("extension-popup:size", (event, size) => {
-  const host = popupHost();
-  if (!host || event.sender !== host || !extensionPopup) return;
-  if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) return;
-  popupLog(`size reported ${Math.round(size.width)}x${Math.round(size.height)} shown=${extensionPopup.shown}`);
-  if (!extensionPopup.shown) {
-    clearTimeout(extensionPopup.settle);
-    revealExtensionPopup(size);
-    return;
-  }
-  placeExtensionPopup(extensionPopup.anchor, size);
+  reportExtensionPopupSize(event.sender, size);
 });
 
 ipcMain.on("extension-popup:close", (event) => {
