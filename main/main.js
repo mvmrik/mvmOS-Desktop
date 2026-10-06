@@ -514,8 +514,22 @@ function openExtensionPage(url, title) {
     parent: win || undefined,
     title,
     backgroundColor: "#ffffff",
-    webPreferences: { session: electronSession.defaultSession, backgroundThrottling: false },
+    // Chromium runs every page of one extension in a single renderer, and
+    // the first page to start it decides how it is set up. Opened sandboxed
+    // (Electron's default), an options page left that renderer unable to run
+    // the popup's preload or anything the app injects, and every popup after
+    // it - for as long as the extension's worker kept the renderer alive -
+    // opened without knowing the site behind it. So this page is set up the
+    // way the popup is.
+    webPreferences: {
+      session: electronSession.defaultSession,
+      contextIsolation: false,
+      sandbox: false,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
   });
+  popupLog(`extension page opened: ${url.split("?")[0].replace(/^chrome-extension:\/\/[^/]+/, "chrome-extension://…")}`);
   page.setMenuBarVisibility(false);
   page.loadURL(url);
   return page;
