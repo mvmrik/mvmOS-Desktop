@@ -77,16 +77,69 @@
     <div id="installation-modal" class="modal hidden">
       <div class="modal-card">
         <h2 id="installation-modal-title">Add installation</h2>
+        <!-- Only when adding an mvmOS installation on Linux; see local-installs.js. -->
+        <div id="modal-mode" class="mode-switch hidden">
+          <button type="button" id="mode-connect-btn" class="mode-btn active">Connect to a server</button>
+          <button type="button" id="mode-local-btn" class="mode-btn">Install on this computer</button>
+        </div>
         <form id="installation-form" class="installation-form">
           <label>
             Display name
             <input id="modal-name" type="text" placeholder="e.g. Work server" autocomplete="off" />
           </label>
-          <label>
+          <label id="modal-address-label">
             Address
             <input id="modal-address" type="text" placeholder="e.g. mvmos.example.com or 192.168.1.10:2026" autocomplete="off" required />
           </label>
           <p class="form-hint" id="modal-type-hint"></p>
+          <div id="modal-local" class="local-install hidden">
+            <p class="form-hint">
+              mvmOS is installed on this computer in its own folder, as its own
+              service and on its own port, and opens right here. Like on a
+              server, it can use everything on this computer. Sign in with your
+              Linux user name and password.
+            </p>
+            <p class="form-hint">
+              It needs Python 3.10 or newer and an internet connection. Your
+              computer asks for your password once.
+            </p>
+            <p class="form-error hidden" id="local-problems"></p>
+            <div class="local-terms">
+              mvmOS is open-source software provided "as-is" without any
+              warranty, express or implied. The authors are not liable for any
+              damage to your system, data loss, security breaches, or any other
+              issues that may arise from its use. You are solely responsible for
+              securing your own system and data. Use at your own risk.
+            </div>
+            <label class="settings-check">
+              <input type="checkbox" id="local-agree" />
+              <span>I agree to these terms</span>
+            </label>
+            <label class="settings-check">
+              <input type="checkbox" id="local-lan" />
+              <span>Let phones and other devices on my network open it</span>
+            </label>
+            <p class="form-hint">
+              Without this, only this computer can open it. With it, anyone on
+              the same network, such as a café Wi-Fi, can see its sign-in page.
+              You can change this later.
+            </p>
+            <pre id="local-log" class="local-log hidden"></pre>
+          </div>
+          <!-- Editing an installation that lives on this computer. -->
+          <div id="modal-local-info" class="local-install hidden">
+            <p class="form-hint" id="local-info-text"></p>
+            <div class="local-status-row">
+              <span id="local-status" class="local-status"></span>
+              <button type="button" id="local-toggle-btn" class="small-btn"></button>
+            </div>
+            <label class="settings-check">
+              <input type="checkbox" id="local-info-lan" />
+              <span>Let phones and other devices on my network open it</span>
+            </label>
+            <p class="form-hint" id="local-lan-hint"></p>
+            <pre id="local-info-log" class="local-log hidden"></pre>
+          </div>
           <fieldset id="modal-title-badges" class="title-badge-settings hidden">
             <legend>Unread badge from page title</legend>
             <p class="form-hint">Enable only the markers this website uses for unread activity.</p>
@@ -209,6 +262,18 @@
         </div>
       </div>
     </div>
+    <!-- Progress of removing an installation from this computer. -->
+    <div id="busy-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2 id="busy-title"></h2>
+        <pre id="busy-log" class="local-log"></pre>
+        <p class="form-error hidden" id="busy-error"></p>
+        <div class="modal-actions">
+          <button type="button" id="busy-close-btn" class="secondary hidden">Close</button>
+        </div>
+      </div>
+    </div>
+
     <!--
       The lock screen covers the whole window, sidebar included; the tab views
       themselves are hidden in the main process, so a locked app shows nothing

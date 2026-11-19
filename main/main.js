@@ -15,6 +15,7 @@
 
 const {
   app,
+  clipboard,
   BrowserWindow,
   Menu,
   Tray,
@@ -36,6 +37,7 @@ const favicon = require("./favicon");
 const extensions = require("./extensions");
 const cookies = require("./cookies");
 const { checkForUpdate } = require("./update");
+const localInstalls = require("./local-installs");
 const { normalizeAddress, originOf, sameSite, isReachable, upgradeScheme } = require("./net");
 
 const SIDEBAR_WIDTH = 260;
@@ -456,7 +458,9 @@ ipcMain.on("find:search", (event, { text, forward, next }) => {
     contents.stopFindInPage("clearSelection");
     return;
   }
-  contents.findInPage(String(text), { forward: forward !== false, findNext: Boolean(next) });
+  // Electron's findNext means "start a new search": true while typing, false
+  // for Enter and the arrows, which move through the matches already found.
+  contents.findInPage(String(text), { forward: forward !== false, findNext: !next });
 });
 
 ipcMain.on("find:close", (event) => {
@@ -815,12 +819,43 @@ function closeTabTree(tabId) {
   persistSession();
 }
 
-function tabContextMenu(tabId) {
+/*
+ * What the right-click was on comes first: a link can go to the system
+ * browser, and text can be cut, copied and pasted there instead of only from
+ * the Edit menu. The tab's own items follow.
+ */
+function pageItems(params) {
+  const items = [];
+  const link = params && params.linkURL;
+  if (link && /^https?:/i.test(link)) {
+    items.push(
+      { label: "Open link in browser", click: () => shell.openExternal(link) },
+      { label: "Copy link address", click: () => clipboard.writeText(link) },
+      { type: "separator" },
+    );
+  }
+  const flags = (params && params.editFlags) || {};
+  if (params && (params.isEditable || params.selectionText)) {
+    if (params.isEditable) items.push({ label: "Cut", role: "cut", enabled: Boolean(flags.canCut) });
+    items.push({ label: "Copy", role: "copy", enabled: Boolean(flags.canCopy) });
+    if (params.isEditable) {
+      items.push(
+        { label: "Paste", role: "paste", enabled: Boolean(flags.canPaste) },
+        { label: "Select all", role: "selectAll" },
+      );
+    }
+    items.push({ type: "separator" });
+  }
+  return items;
+}
+
+function tabContextMenu(tabId, params) {
   const tab = tabs.get(tabId);
   if (!tab) return;
   const wc = tab.view.webContents;
   const installation = installations.find((i) => i.id === tab.info.installationId);
   Menu.buildFromTemplate([
+    ...pageItems(params),
     { label: "Back", enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
     { label: "Forward", enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
     { label: "Reload", click: () => wc.reload() },
@@ -1017,8 +1052,13 @@ function createTab({ installationId, kind, parentId, url, id }) {
 
   // Anything outside the installation's own site belongs in the user's real
   // browser, not in a tab of this app.
-  wc.setWindowOpenHandler(({ url: openUrl }) => {
-    if (belongsInside(tab, openUrl)) {
+  wc.setWindowOpenHandler(({ url: openUrl, disposition }) => {
+    // Ctrl+click (or a middle click) on a link asks for a background tab,
+    // which here means the system browser even for the installation's own
+    // pages; a normal click and window.open still open inside.
+    if (disposition === "background-tab" && /^https?:/i.test(openUrl)) {
+      shell.openExternal(openUrl);
+    } else if (belongsInside(tab, openUrl)) {
       win.webContents.send("tab:new-child", { parentId: tabId, url: openUrl });
     } else {
       shell.openExternal(openUrl);
@@ -1067,7 +1107,7 @@ function createTab({ installationId, kind, parentId, url, id }) {
     win.webContents.send("tab:failed", { tabId, message: errorDescription || String(errorCode) });
   });
 
-  wc.on("context-menu", () => tabContextMenu(tabId));
+  wc.on("context-menu", (_event, params) => tabContextMenu(tabId, params));
 
   tabs.set(tabId, tab);
   win.contentView.addChildView(view);
@@ -1759,6 +1799,82 @@ ipcMain.handle("installations:reorder", (_event, orderedIds) => {
 });
 
 ipcMain.handle("installations:reachable", (_event, address) => isReachable(address));
+
+/* ------------------------------------------------- mvmOS on this computer */
+
+function localProgress(line) {
+  if (win && !win.isDestroyed()) win.webContents.send("local:progress", line);
+}
+
+ipcMain.handle("local:info", () => ({
+  supported: localInstalls.supported(),
+  installs: localInstalls.load(),
+}));
+
+ipcMain.handle("local:check", () => localInstalls.check());
+
+ipcMain.handle("local:install", async (_event, { name, lan }) => {
+  const known = localInstalls.load();
+  const used = new Set(Object.values(known).map((l) => l.port));
+  const { service, port, address } = await localInstalls.install({
+    displayName: name,
+    used,
+    lan: Boolean(lan),
+    isReachable,
+    onLine: localProgress,
+  });
+  const installation = {
+    id: randomUUID(),
+    name: String(name || "").trim() || "This computer",
+    address,
+    type: "mvmos",
+    icon: await favicon.discover(address),
+  };
+  installations.push(installation);
+  store.save(installations);
+  known[installation.id] = { service, port };
+  localInstalls.save(known);
+  return installation;
+});
+
+ipcMain.handle("local:uninstall", async (_event, id) => {
+  const known = localInstalls.load();
+  const local = known[id];
+  if (!local) throw new Error("This installation was not installed by this app.");
+  await localInstalls.uninstall(local.service, localProgress);
+  for (const [tabId, tab] of [...tabs]) {
+    if (tab.info.installationId === id) closeTabTree(tabId);
+  }
+  installations = installations.filter((i) => i.id !== id);
+  store.save(installations);
+  delete known[id];
+  localInstalls.save(known);
+  return installations;
+});
+
+ipcMain.handle("local:status", async (_event, id) => {
+  const local = localInstalls.load()[id];
+  return local ? localInstalls.status(local.service) : "unknown";
+});
+
+ipcMain.handle("local:set-running", async (_event, { id, running }) => {
+  const local = localInstalls.load()[id];
+  if (!local) throw new Error("This installation was not installed by this app.");
+  await localInstalls.setRunning(local.service, Boolean(running));
+  return localInstalls.status(local.service);
+});
+
+ipcMain.handle("local:network", (_event, id) => {
+  const local = localInstalls.load()[id];
+  if (!local) throw new Error("This installation was not installed by this app.");
+  return { ...localInstalls.network(local.service), port: local.port };
+});
+
+ipcMain.handle("local:set-network", async (_event, { id, lan }) => {
+  const local = localInstalls.load()[id];
+  if (!local) throw new Error("This installation was not installed by this app.");
+  return { ...(await localInstalls.setNetwork(local.service, Boolean(lan))), port: local.port };
+});
 
 ipcMain.handle("tabs:open", (_event, payload) => createTab(payload));
 

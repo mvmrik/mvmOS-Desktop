@@ -28,6 +28,16 @@ contextBridge.exposeInMainWorld("api", {
   reorderInstallations: (orderedIds) => ipcRenderer.invoke("installations:reorder", orderedIds),
   checkReachable: (address) => ipcRenderer.invoke("installations:reachable", address),
 
+  localInfo: () => ipcRenderer.invoke("local:info"),
+  localCheck: () => ipcRenderer.invoke("local:check"),
+  localInstall: (name, lan) => ipcRenderer.invoke("local:install", { name, lan }),
+  localUninstall: (id) => ipcRenderer.invoke("local:uninstall", id),
+  localStatus: (id) => ipcRenderer.invoke("local:status", id),
+  localSetRunning: (id, running) => ipcRenderer.invoke("local:set-running", { id, running }),
+  localNetwork: (id) => ipcRenderer.invoke("local:network", id),
+  localSetNetwork: (id, lan) => ipcRenderer.invoke("local:set-network", { id, lan }),
+  onLocalProgress: (handler) => on("local:progress", handler),
+
   openTab: (payload) => ipcRenderer.invoke("tabs:open", payload),
   activateTab: (tabId) => ipcRenderer.invoke("tabs:activate", tabId),
   closeTab: (tabId) => ipcRenderer.invoke("tabs:close", tabId),

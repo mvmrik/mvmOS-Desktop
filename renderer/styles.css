@@ -986,3 +986,122 @@ button {
 .lock-card button:hover {
   background: var(--accent-hover);
 }
+
+/* mvmOS on this computer */
+
+.mode-switch {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  margin: 0 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mode-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.local-install {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.local-install .form-hint {
+  margin: 0;
+}
+
+.local-terms {
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Beats the column layout and padded inputs every form label gets. */
+.installation-form .local-install .settings-check {
+  flex-direction: row;
+  align-items: center;
+  margin: 0;
+  color: var(--text);
+}
+
+.installation-form .local-install .settings-check input {
+  padding: 0;
+}
+
+/* The installer's own output: long, so only the tail is kept in view. */
+.local-log {
+  height: 150px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font: 11.5px/1.45 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.local-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.local-status.running {
+  color: #6fd08c;
+}
+
+.local-status.stopped {
+  color: var(--danger);
+}
+
+.small-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.small-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.small-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

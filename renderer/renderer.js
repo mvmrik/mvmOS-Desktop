@@ -5,6 +5,15 @@ let tabs = [];
 let activeTabId = null;
 let sidebarVisible = true;
 let statusRetryHandler = null;
+// mvmOS installed on this computer by the app: whether this platform can do
+// it at all, and which sidebar entries are such installations.
+let localInfo = { supported: false, installs: {} };
+// "connect" or "local" while adding an mvmOS installation.
+let installMode = "connect";
+// Set while install.sh runs, so the dialog cannot be closed underneath it.
+let localBusy = false;
+// Which <pre> the installer's output currently goes to.
+let localLogId = null;
 
 // Which installations currently have their open buttons revealed. Kept outside
 // the render pass because renderSidebar() rebuilds the list from scratch.
@@ -137,9 +146,222 @@ async function openInstallationModal(installation = null, fixedType = "mvmos") {
   }
   $("modal-remove-btn").classList.toggle("hidden", !installation);
   $("modal-error").classList.add("hidden");
+
+  const local = installation ? localInfo.installs[installation.id] : null;
+  $("modal-mode").classList.toggle("hidden", Boolean(installation) || editingType !== "mvmos" || !localInfo.supported);
+  $("modal-remove-btn").textContent = local ? "Uninstall" : "Remove";
+  $("modal-local-info").classList.toggle("hidden", !local);
+  $("local-info-log").classList.add("hidden");
+  setInstallMode("connect");
+  if (local) {
+    $("modal-address-label").classList.add("hidden");
+    $("modal-type-hint").classList.add("hidden");
+    $("local-info-text").textContent =
+      `Installed on this computer in /opt/${local.service}, as the service ${local.service}, on port ${local.port}.`;
+    refreshLocalStatus(installation.id);
+    refreshLocalNetwork(installation.id);
+  }
   await showModal("installation-modal");
-  $("modal-address").focus();
+  $(local ? "modal-name" : "modal-address").focus();
 }
+
+/* ------------------------------------------------- mvmOS on this computer */
+
+function setInstallMode(mode) {
+  installMode = mode === "local" ? "local" : "connect";
+  const isLocal = installMode === "local";
+  $("mode-connect-btn").classList.toggle("active", !isLocal);
+  $("mode-local-btn").classList.toggle("active", isLocal);
+  $("modal-address-label").classList.toggle("hidden", isLocal);
+  // A hidden required field would block the form without saying why.
+  $("modal-address").required = !isLocal;
+  $("modal-type-hint").classList.toggle("hidden", isLocal);
+  $("modal-local").classList.toggle("hidden", !isLocal);
+  $("local-log").classList.add("hidden");
+  $("local-log").textContent = "";
+  $("local-lan").checked = false;
+  $("modal-error").classList.add("hidden");
+  $("modal-name").placeholder = isLocal ? "e.g. My computer" : "e.g. Work server";
+  if (!editingId) $("modal-submit-btn").textContent = isLocal ? "Install" : "Add";
+  $("modal-submit-btn").disabled = false;
+  $("local-problems").classList.add("hidden");
+  if (isLocal) {
+    checkLocalRequirements();
+    $("modal-name").focus();
+  }
+}
+
+async function checkLocalRequirements() {
+  const problems = await window.api.localCheck();
+  if (installMode !== "local") return;
+  const el = $("local-problems");
+  el.textContent = problems.join(" ");
+  el.classList.toggle("hidden", !problems.length);
+  $("modal-submit-btn").disabled = problems.length > 0;
+}
+
+function setLocalBusy(busy) {
+  localBusy = busy;
+  for (const id of ["modal-submit-btn", "modal-cancel-btn", "modal-remove-btn", "mode-connect-btn",
+    "mode-local-btn", "modal-name", "local-agree", "local-lan", "local-toggle-btn", "local-info-lan"]) {
+    $(id).disabled = busy;
+  }
+}
+
+function appendLocalLog(line) {
+  if (!localLogId) return;
+  const log = $(localLogId);
+  log.classList.remove("hidden");
+  log.textContent += `${line}\n`;
+  log.scrollTop = log.scrollHeight;
+}
+
+async function submitLocalInstall() {
+  const errorEl = $("modal-error");
+  errorEl.classList.add("hidden");
+  if (!$("local-agree").checked) {
+    errorEl.textContent = "Agree to the terms to install mvmOS.";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+  const name = $("modal-name").value.trim() || "This computer";
+  $("local-log").textContent = "";
+  localLogId = "local-log";
+  setLocalBusy(true);
+  $("modal-submit-btn").textContent = "Installing…";
+  try {
+    const installation = await window.api.localInstall(name, $("local-lan").checked);
+    localInfo = await window.api.localInfo();
+    installations.push(installation);
+    localLogId = null;
+    setLocalBusy(false);
+    await hideModal("installation-modal");
+    renderApp();
+    openOrSwitch(installation.id, "desktop");
+  } catch (e) {
+    errorEl.textContent = cleanError(e);
+    errorEl.classList.remove("hidden");
+  } finally {
+    localLogId = null;
+    setLocalBusy(false);
+    if (installMode === "local") $("modal-submit-btn").textContent = "Install";
+  }
+}
+
+async function refreshLocalStatus(id) {
+  const statusEl = $("local-status");
+  const btn = $("local-toggle-btn");
+  statusEl.textContent = "Checking…";
+  statusEl.className = "local-status";
+  btn.disabled = true;
+  const state = await window.api.localStatus(id);
+  if (editingId !== id) return;
+  const running = state === "active";
+  statusEl.textContent = running ? "Running" : (state === "activating" ? "Starting…" : "Stopped");
+  statusEl.classList.add(running ? "running" : "stopped");
+  btn.textContent = running ? "Stop" : "Start";
+  btn.dataset.running = running ? "1" : "";
+  btn.disabled = localBusy;
+}
+
+function showLocalNetwork(net) {
+  $("local-info-lan").checked = net.lan;
+  const hint = $("local-lan-hint");
+  if (!net.lan) {
+    hint.textContent = "Only this computer can open it.";
+  } else if (net.addresses.length) {
+    const urls = net.addresses.map((a) => `http://${a}:${net.port}`).join(" or ");
+    hint.textContent = `On a phone or another device on the same network, open ${urls}. If it does not open, a firewall on this computer may be blocking port ${net.port}.`;
+  } else {
+    hint.textContent = `Other devices open it at this computer's network address on port ${net.port}.`;
+  }
+}
+
+async function refreshLocalNetwork(id) {
+  const hint = $("local-lan-hint");
+  hint.textContent = "";
+  try {
+    const net = await window.api.localNetwork(id);
+    if (editingId === id) showLocalNetwork(net);
+  } catch (e) {
+    if (editingId === id) hint.textContent = cleanError(e);
+  }
+}
+
+/* Applied at once, since it needs the password and a restart anyway. */
+async function changeLocalNetwork() {
+  const id = editingId;
+  if (!id) return;
+  const lan = $("local-info-lan").checked;
+  const errorEl = $("modal-error");
+  errorEl.classList.add("hidden");
+  setLocalBusy(true);
+  try {
+    showLocalNetwork(await window.api.localSetNetwork(id, lan));
+  } catch (e) {
+    $("local-info-lan").checked = !lan;
+    errorEl.textContent = cleanError(e);
+    errorEl.classList.remove("hidden");
+  } finally {
+    setLocalBusy(false);
+    refreshLocalStatus(id);
+  }
+}
+
+async function toggleLocalRunning() {
+  const id = editingId;
+  if (!id) return;
+  const errorEl = $("modal-error");
+  errorEl.classList.add("hidden");
+  const start = !$("local-toggle-btn").dataset.running;
+  setLocalBusy(true);
+  try {
+    await window.api.localSetRunning(id, start);
+  } catch (e) {
+    errorEl.textContent = cleanError(e);
+    errorEl.classList.remove("hidden");
+  } finally {
+    setLocalBusy(false);
+    refreshLocalStatus(id);
+  }
+}
+
+/* Removing a local installation runs install.sh --uninstall; its output is
+   shown in a dialog of its own, since the edit dialog may not be open. */
+async function uninstallLocal(installation) {
+  const local = localInfo.installs[installation.id];
+  const confirmed = await confirmDialog({
+    title: "Uninstall mvmOS",
+    message: `Uninstall "${installation.name}" from this computer? Its service is stopped and removed, and the folder /opt/${local.service} is deleted with all of its data and installed apps. This cannot be undone.`,
+    okLabel: "Uninstall",
+  });
+  if (!confirmed) return;
+
+  $("busy-title").textContent = `Uninstalling "${installation.name}"…`;
+  $("busy-log").textContent = "";
+  $("busy-error").classList.add("hidden");
+  $("busy-close-btn").classList.add("hidden");
+  localLogId = "busy-log";
+  localBusy = true;
+  await showModal("busy-modal");
+  try {
+    installations = await window.api.localUninstall(installation.id);
+    localInfo = await window.api.localInfo();
+    forgetTabs(new Set(tabs.filter((t) => t.installationId === installation.id).map((t) => t.id)));
+    renderApp();
+    localBusy = false;
+    await hideModal("busy-modal");
+  } catch (e) {
+    localBusy = false;
+    $("busy-title").textContent = `"${installation.name}" was not uninstalled`;
+    $("busy-error").textContent = cleanError(e);
+    $("busy-error").classList.remove("hidden");
+    $("busy-close-btn").classList.remove("hidden");
+  } finally {
+    localLogId = null;
+  }
+}
+
 
 /* -------------------------------------------------------------------- tabs */
 
@@ -277,6 +499,10 @@ async function closeTabUi(tabId) {
 /* ----------------------------------------------------------- installations */
 
 async function handleRemoveInstallation(installation) {
+  if (localInfo.installs[installation.id]) {
+    await uninstallLocal(installation);
+    return;
+  }
   const confirmed = await confirmDialog({
     title: "Remove installation",
     message: `Remove "${installation.name}"? This closes all of its open tabs. The installation itself is not touched.`,
@@ -291,6 +517,11 @@ async function handleRemoveInstallation(installation) {
 
 async function submitInstallationForm(event) {
   event.preventDefault();
+  if (localBusy) return;
+  if (!editingId && editingType === "mvmos" && installMode === "local") {
+    await submitLocalInstall();
+    return;
+  }
   const errorEl = $("modal-error");
   const submitBtn = $("modal-submit-btn");
   const name = $("modal-name").value;
@@ -1315,7 +1546,15 @@ function wireHandlers() {
 
   $("add-installation-btn").addEventListener("click", () => openInstallationModal(null, "mvmos"));
   $("hide-sidebar-btn").addEventListener("click", () => window.api.setSidebarVisible(false));
-  $("modal-cancel-btn").addEventListener("click", () => hideModal("installation-modal"));
+  $("modal-cancel-btn").addEventListener("click", () => {
+    if (!localBusy) hideModal("installation-modal");
+  });
+  $("mode-connect-btn").addEventListener("click", () => setInstallMode("connect"));
+  $("mode-local-btn").addEventListener("click", () => setInstallMode("local"));
+  $("local-toggle-btn").addEventListener("click", toggleLocalRunning);
+  $("local-info-lan").addEventListener("change", changeLocalNetwork);
+  $("busy-close-btn").addEventListener("click", () => hideModal("busy-modal"));
+  window.api.onLocalProgress(appendLocalLog);
   $("installation-form").addEventListener("submit", submitInstallationForm);
   $("modal-remove-btn").addEventListener("click", async () => {
     const installation = installations.find((i) => i.id === editingId);
@@ -1354,6 +1593,12 @@ function wireHandlers() {
     // Escape must not dismiss the lock screen; it is the one overlay that is
     // not the user's to close.
     if (isLocked) return;
+    // Nothing may be closed while mvmOS is being installed or removed.
+    if (localBusy) return;
+    if (!$("busy-modal").classList.contains("hidden")) {
+      hideModal("busy-modal");
+      return;
+    }
     if (openExtensionId) window.api.closeExtensionPopup();
     if (!$("installation-modal").classList.contains("hidden")) hideModal("installation-modal");
     else if (!$("settings-modal").classList.contains("hidden")) hideModal("settings-modal");
@@ -1463,6 +1708,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setExtensionActions(await window.api.extensionActions());
 
   installations = await window.api.listInstallations();
+  localInfo = await window.api.localInfo();
   renderApp();
 
   /*
