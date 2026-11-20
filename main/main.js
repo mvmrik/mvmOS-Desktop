@@ -824,8 +824,19 @@ function closeTabTree(tabId) {
  * browser, and text can be cut, copied and pasted there instead of only from
  * the Edit menu. The tab's own items follow.
  */
-function pageItems(params) {
+function pageItems(params, wc) {
   const items = [];
+  const image = params && params.mediaType === "image" ? params.srcURL : "";
+  if (image) {
+    // copyImageAt() takes the decoded picture already on screen, so it works
+    // for images behind a login or from blob:/data: URLs as well; downloadURL()
+    // goes through the session's normal download with its save dialog.
+    items.push(
+      { label: "Copy image", enabled: Boolean(params.hasImageContents), click: () => wc.copyImageAt(params.x, params.y) },
+      { label: "Save image as…", enabled: /^(https?|data|blob):/i.test(image), click: () => wc.downloadURL(image) },
+      { type: "separator" },
+    );
+  }
   const link = params && params.linkURL;
   if (link && /^https?:/i.test(link)) {
     items.push(
@@ -855,7 +866,7 @@ function tabContextMenu(tabId, params) {
   const wc = tab.view.webContents;
   const installation = installations.find((i) => i.id === tab.info.installationId);
   Menu.buildFromTemplate([
-    ...pageItems(params),
+    ...pageItems(params, wc),
     { label: "Back", enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
     { label: "Forward", enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
     { label: "Reload", click: () => wc.reload() },
