@@ -21,7 +21,15 @@ Built on Electron, so every platform runs the exact same Chromium engine and the
 - A saved http address is rewritten to https once the server is seen redirecting there.
 - On startup the app asks GitHub for the newest release and offers a download link when there is one; `Help → Check for updates…` asks on demand.
 - Hiding the sidebar removes it completely — the page takes the whole window. Toggle it with `Ctrl`/`Cmd`+`B`, the `‹` button, the View menu or the right-click menu on any page.
+- `Ctrl/Cmd+F` searches the page. Right-clicking a text field offers Cut, Copy, Paste and Select all, and right-clicking a link offers to open it in the system browser or copy its address; `Ctrl`+click or a middle click opens a link in the system browser as well.
 - Dark theme throughout, including the app's own dialogs.
+
+## mvmOS on this computer
+
+`+` → **Install on this computer** installs mvmOS on the computer the app runs on, without a terminal. It downloads the project's own `install.sh` and runs it with `--name`, `--port`, `--host` and `--yes`, so every installation gets its own folder `/opt/<name>`, its own service and its own port, and several can live side by side. The installation then appears in the sidebar and opens in a tab. Its ✎ settings show where it lives, start and stop it, let phones and other devices on the same network open it (off by default), and uninstall it with `install.sh --uninstall`. Which entries are local is kept in `local-installs.json` in the user data directory.
+
+- **Linux** needs systemd, polkit (`pkexec`, which asks for the password), Python 3.10+ and curl or wget. The AppImage also needs FUSE 2 (`fuse2` on Arch).
+- **Windows** (10 version 2004 or newer, or 11, 64-bit) runs mvmOS in a WSL distribution of its own named `mvmOS`, made from the official Ubuntu 24.04 WSL image and kept in `%LOCALAPPDATA%\mvmOS Desktop\wsl`; other WSL distributions are never touched. If WSL is not ready, the app turns it on behind the normal Windows permission prompt, updates it, and asks for a restart when Windows needs one. The first installation also creates the Linux user that people sign in with, who is the administrator. The distribution runs while the app is open, and its last installation removes it. Other devices reach it through the app itself, which Windows Firewall asks to allow once.
 
 ## Development
 

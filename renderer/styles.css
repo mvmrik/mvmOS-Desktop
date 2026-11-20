@@ -1054,6 +1054,24 @@ button {
   padding: 0;
 }
 
+/* What Install does first, such as turning on WSL - not an error. */
+.local-notes {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.local-user {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* The installer's own output: long, so only the tail is kept in view. */
 .local-log {
   height: 150px;

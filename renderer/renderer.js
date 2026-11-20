@@ -7,7 +7,7 @@ let sidebarVisible = true;
 let statusRetryHandler = null;
 // mvmOS installed on this computer by the app: whether this platform can do
 // it at all, and which sidebar entries are such installations.
-let localInfo = { supported: false, installs: {} };
+let localInfo = { supported: false, platform: "linux", installs: {} };
 // "connect" or "local" while adding an mvmOS installation.
 let installMode = "connect";
 // Set while install.sh runs, so the dialog cannot be closed underneath it.
@@ -156,8 +156,9 @@ async function openInstallationModal(installation = null, fixedType = "mvmos") {
   if (local) {
     $("modal-address-label").classList.add("hidden");
     $("modal-type-hint").classList.add("hidden");
-    $("local-info-text").textContent =
-      `Installed on this computer in /opt/${local.service}, as the service ${local.service}, on port ${local.port}.`;
+    $("local-info-text").textContent = localInfo.platform === "windows"
+      ? `Installed in the mvmOS Linux on this computer (WSL), in /opt/${local.service}, as the service ${local.service}, on port ${local.port}. It runs while mvmOS Desktop is open.`
+      : `Installed on this computer in /opt/${local.service}, as the service ${local.service}, on port ${local.port}.`;
     refreshLocalStatus(installation.id);
     refreshLocalNetwork(installation.id);
   }
@@ -166,6 +167,23 @@ async function openInstallationModal(installation = null, fixedType = "mvmos") {
 }
 
 /* ------------------------------------------------- mvmOS on this computer */
+
+const LOCAL_TEXTS = {
+  linux: {
+    about: "mvmOS is installed on this computer in its own folder, as its own service and on its own port, and opens right here. Like on a server, it can use everything on this computer. Sign in with your Linux user name and password.",
+    needs: "It needs Python 3.10 or newer and an internet connection. Your computer asks for your password once.",
+    lan: "Without this, only this computer can open it. With it, anyone on the same network, such as a café Wi-Fi, can see its sign-in page. You can change this later.",
+  },
+  windows: {
+    about: "mvmOS is installed on this computer in its own Ubuntu Linux, which Windows runs with WSL. Each installation gets its own folder, service and port there, and opens right here. Like on a server, it can use everything in that Linux. It runs while mvmOS Desktop is open.",
+    needs: "It needs an internet connection. The first time, Windows may ask for permission.",
+    lan: "Without this, only this computer can open it. With it, devices on the same network can see its sign-in page while mvmOS Desktop is open. Windows asks once whether mvmOS Desktop may use the network: allow it for private networks. You can change this later.",
+  },
+};
+
+function localTexts() {
+  return LOCAL_TEXTS[localInfo.platform] || LOCAL_TEXTS.linux;
+}
 
 function setInstallMode(mode) {
   installMode = mode === "local" ? "local" : "connect";
@@ -180,6 +198,14 @@ function setInstallMode(mode) {
   $("local-log").classList.add("hidden");
   $("local-log").textContent = "";
   $("local-lan").checked = false;
+  const texts = localTexts();
+  $("local-about").textContent = texts.about;
+  $("local-needs").textContent = texts.needs;
+  $("local-lan-note").textContent = texts.lan;
+  $("local-signin").classList.add("hidden");
+  $("local-notes").classList.add("hidden");
+  $("local-user").classList.add("hidden");
+  for (const id of ["local-user-name", "local-password", "local-password2"]) $(id).value = "";
   $("modal-error").classList.add("hidden");
   $("modal-name").placeholder = isLocal ? "e.g. My computer" : "e.g. Work server";
   if (!editingId) $("modal-submit-btn").textContent = isLocal ? "Install" : "Add";
@@ -192,18 +218,37 @@ function setInstallMode(mode) {
 }
 
 async function checkLocalRequirements() {
-  const problems = await window.api.localCheck();
+  $("modal-submit-btn").disabled = true;
+  let result;
+  try {
+    result = await window.api.localCheck();
+  } catch (e) {
+    result = { problems: [cleanError(e)], notes: [], needUser: false, users: [] };
+  }
   if (installMode !== "local") return;
+  const { problems, notes } = result;
   const el = $("local-problems");
   el.textContent = problems.join(" ");
   el.classList.toggle("hidden", !problems.length);
-  $("modal-submit-btn").disabled = problems.length > 0;
+  $("local-notes").textContent = notes.join(" ");
+  $("local-notes").classList.toggle("hidden", !notes.length);
+  const needUser = localInfo.platform === "windows" && result.needUser;
+  $("local-user").classList.toggle("hidden", !needUser);
+  if (needUser && !$("local-user-name").value) $("local-user-name").value = result.suggestedUser || "";
+  const signin = $("local-signin");
+  const users = result.users || [];
+  signin.textContent = users.length
+    ? `Sign in with the Linux user ${users.join(" or ")} of the mvmOS Linux and its password.`
+    : "";
+  signin.classList.toggle("hidden", !(localInfo.platform === "windows" && users.length));
+  $("modal-submit-btn").disabled = problems.length > 0 || localBusy;
 }
 
 function setLocalBusy(busy) {
   localBusy = busy;
   for (const id of ["modal-submit-btn", "modal-cancel-btn", "modal-remove-btn", "mode-connect-btn",
-    "mode-local-btn", "modal-name", "local-agree", "local-lan", "local-toggle-btn", "local-info-lan"]) {
+    "mode-local-btn", "modal-name", "local-agree", "local-lan", "local-toggle-btn", "local-info-lan",
+    "local-user-name", "local-password", "local-password2"]) {
     $(id).disabled = busy;
   }
 }
@@ -224,13 +269,41 @@ async function submitLocalInstall() {
     errorEl.classList.remove("hidden");
     return;
   }
+  const needUser = !$("local-user").classList.contains("hidden");
+  const user = $("local-user-name").value.trim();
+  const password = $("local-password").value;
+  if (needUser) {
+    let problem = "";
+    if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) {
+      problem = "The Linux user name may contain small letters a-z, digits, - and _, and has to start with a letter.";
+    } else if (!password) {
+      problem = "Choose a password for the Linux user.";
+    } else if (password !== $("local-password2").value) {
+      problem = "The two passwords are not the same.";
+    }
+    if (problem) {
+      errorEl.textContent = problem;
+      errorEl.classList.remove("hidden");
+      return;
+    }
+  }
   const name = $("modal-name").value.trim() || "This computer";
   $("local-log").textContent = "";
   localLogId = "local-log";
   setLocalBusy(true);
   $("modal-submit-btn").textContent = "Installing…";
   try {
-    const installation = await window.api.localInstall(name, $("local-lan").checked);
+    const installation = await window.api.localInstall({
+      name,
+      lan: $("local-lan").checked,
+      user: needUser ? user : "",
+      password: needUser ? password : "",
+    });
+    if (installation && installation.restart) {
+      $("local-notes").textContent = "Windows has turned on WSL. Restart the computer, open mvmOS Desktop again and click Install to continue.";
+      $("local-notes").classList.remove("hidden");
+      return;
+    }
     localInfo = await window.api.localInfo();
     installations.push(installation);
     localLogId = null;
@@ -269,6 +342,9 @@ function showLocalNetwork(net) {
   const hint = $("local-lan-hint");
   if (!net.lan) {
     hint.textContent = "Only this computer can open it.";
+  } else if (net.addresses.length && localInfo.platform === "windows") {
+    const urls = net.addresses.map((a) => `http://${a}:${net.port}`).join(" or ");
+    hint.textContent = `On a phone or another device on the same network, open ${urls} while mvmOS Desktop is open. If it does not open, allow mvmOS Desktop in Windows Defender Firewall and set this network to Private in the Windows network settings.`;
   } else if (net.addresses.length) {
     const urls = net.addresses.map((a) => `http://${a}:${net.port}`).join(" or ");
     hint.textContent = `On a phone or another device on the same network, open ${urls}. If it does not open, a firewall on this computer may be blocking port ${net.port}.`;
@@ -332,7 +408,11 @@ async function uninstallLocal(installation) {
   const local = localInfo.installs[installation.id];
   const confirmed = await confirmDialog({
     title: "Uninstall mvmOS",
-    message: `Uninstall "${installation.name}" from this computer? Its service is stopped and removed, and the folder /opt/${local.service} is deleted with all of its data and installed apps. This cannot be undone.`,
+    message: `Uninstall "${installation.name}" from this computer? Its service is stopped and removed, and the folder /opt/${local.service} is deleted with all of its data and installed apps.${
+      localInfo.platform === "windows" && Object.keys(localInfo.installs).length === 1
+        ? " It is the last one, so the mvmOS Linux is removed from Windows as well, with its users."
+        : ""
+    } This cannot be undone.`,
     okLabel: "Uninstall",
   });
   if (!confirmed) return;
@@ -1681,10 +1761,15 @@ function wireHandlers() {
     renderSidebar();
   });
 
-  window.api.onTabFailed(({ tabId, message }) => {
+  window.api.onTabFailed(({ tabId, message, starting }) => {
     if (tabId !== activeTabId) return;
     const tab = tabs.find((t) => t.id === tabId);
-    setStatus(`"${tab ? tab.title : "This page"}" could not be loaded: ${message}`);
+    setStatus(starting ? message : `"${tab ? tab.title : "This page"}" could not be loaded: ${message}`);
+  });
+
+  // A tab that failed while mvmOS on this computer was starting has loaded.
+  window.api.onTabRecovered(({ tabId }) => {
+    if (tabId === activeTabId) clearStatus();
   });
 
   // Closing a tab from the page's own context menu happens in the main process.

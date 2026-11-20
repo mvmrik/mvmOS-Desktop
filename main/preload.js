@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld("api", {
 
   localInfo: () => ipcRenderer.invoke("local:info"),
   localCheck: () => ipcRenderer.invoke("local:check"),
-  localInstall: (name, lan) => ipcRenderer.invoke("local:install", { name, lan }),
+  localInstall: (options) => ipcRenderer.invoke("local:install", options),
   localUninstall: (id) => ipcRenderer.invoke("local:uninstall", id),
   localStatus: (id) => ipcRenderer.invoke("local:status", id),
   localSetRunning: (id, running) => ipcRenderer.invoke("local:set-running", { id, running }),
@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld("api", {
   onTabIcon: (handler) => on("tab:icon", handler),
   onTabUnread: (handler) => on("tab:unread", handler),
   onTabFailed: (handler) => on("tab:failed", handler),
+  onTabRecovered: (handler) => on("tab:recovered", handler),
   onTabClosed: (handler) => on("tab:closed", handler),
   onInstallationIcon: (handler) => on("installation:icon", handler),
   onInstallationAddress: (handler) => on("installation:address", handler),

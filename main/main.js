@@ -1104,7 +1104,32 @@ function createTab({ installationId, kind, parentId, url, id }) {
   wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     // -3 is an aborted load, which every normal in-page navigation produces.
     if (!isMainFrame || errorCode === -3) return;
+    // On Windows, mvmOS on this computer starts with this app, so right after
+    // it has started the installation may not answer yet; it is waited for.
+    // On Linux it runs as an ordinary service, and a failure is just shown.
+    if (localInstalls.platform() === "windows" && localInstalls.load()[installationId] && !tab.waitingForLocal) {
+      tab.waitingForLocal = true;
+      tab.failed = true;
+      win.webContents.send("tab:failed", { tabId, starting: true, message: "mvmOS on this computer is starting. It opens as soon as it is ready." });
+      void waitForLocal(installation.address).then((ready) => {
+        tab.waitingForLocal = false;
+        if (wc.isDestroyed()) return;
+        if (ready) {
+          wc.loadURL(validatedURL || tab.url);
+        } else if (win && !win.isDestroyed()) {
+          win.webContents.send("tab:failed", { tabId, message: "mvmOS on this computer does not start. Open its ✎ settings to start it." });
+        }
+      });
+      return;
+    }
+    tab.failed = true;
     win.webContents.send("tab:failed", { tabId, message: errorDescription || String(errorCode) });
+  });
+
+  wc.on("did-finish-load", () => {
+    if (!tab.failed) return;
+    tab.failed = false;
+    if (win && !win.isDestroyed()) win.webContents.send("tab:recovered", { tabId });
   });
 
   wc.on("context-menu", (_event, params) => tabContextMenu(tabId, params));
@@ -1800,6 +1825,20 @@ ipcMain.handle("installations:reorder", (_event, orderedIds) => {
 
 ipcMain.handle("installations:reachable", (_event, address) => isReachable(address));
 
+const LOCAL_START_WAIT_MS = 120000;
+
+function waitForLocal(address) {
+  const deadline = Date.now() + LOCAL_START_WAIT_MS;
+  return new Promise((resolve) => {
+    const attempt = async () => {
+      if (await isReachable(address)) return resolve(true);
+      if (Date.now() > deadline) return resolve(false);
+      setTimeout(attempt, 2000);
+    };
+    attempt();
+  });
+}
+
 /* ------------------------------------------------- mvmOS on this computer */
 
 function localProgress(line) {
@@ -1808,21 +1847,27 @@ function localProgress(line) {
 
 ipcMain.handle("local:info", () => ({
   supported: localInstalls.supported(),
+  platform: localInstalls.platform(),
   installs: localInstalls.load(),
 }));
 
 ipcMain.handle("local:check", () => localInstalls.check());
 
-ipcMain.handle("local:install", async (_event, { name, lan }) => {
+ipcMain.handle("local:install", async (_event, { name, lan, user, password }) => {
   const known = localInstalls.load();
   const used = new Set(Object.values(known).map((l) => l.port));
-  const { service, port, address } = await localInstalls.install({
+  const result = await localInstalls.install({
     displayName: name,
     used,
     lan: Boolean(lan),
+    user,
+    password,
     isReachable,
     onLine: localProgress,
   });
+  // Windows has just turned WSL on and has to restart before it works.
+  if (result.restart) return { restart: true };
+  const { service, port, address } = result;
   const installation = {
     id: randomUUID(),
     name: String(name || "").trim() || "This computer",
@@ -1832,8 +1877,9 @@ ipcMain.handle("local:install", async (_event, { name, lan }) => {
   };
   installations.push(installation);
   store.save(installations);
-  known[installation.id] = { service, port };
+  known[installation.id] = { service, port, lan: result.lan === true };
   localInstalls.save(known);
+  localInstalls.applyNetwork(known);
   return installation;
 });
 
@@ -1841,7 +1887,7 @@ ipcMain.handle("local:uninstall", async (_event, id) => {
   const known = localInstalls.load();
   const local = known[id];
   if (!local) throw new Error("This installation was not installed by this app.");
-  await localInstalls.uninstall(local.service, localProgress);
+  await localInstalls.uninstall(local, { last: Object.keys(known).length === 1, onLine: localProgress });
   for (const [tabId, tab] of [...tabs]) {
     if (tab.info.installationId === id) closeTabTree(tabId);
   }
@@ -1849,31 +1895,37 @@ ipcMain.handle("local:uninstall", async (_event, id) => {
   store.save(installations);
   delete known[id];
   localInstalls.save(known);
+  localInstalls.applyNetwork(known);
   return installations;
 });
 
 ipcMain.handle("local:status", async (_event, id) => {
   const local = localInstalls.load()[id];
-  return local ? localInstalls.status(local.service) : "unknown";
+  return local ? localInstalls.status(local) : "unknown";
 });
 
 ipcMain.handle("local:set-running", async (_event, { id, running }) => {
   const local = localInstalls.load()[id];
   if (!local) throw new Error("This installation was not installed by this app.");
-  await localInstalls.setRunning(local.service, Boolean(running));
-  return localInstalls.status(local.service);
+  await localInstalls.setRunning(local, Boolean(running));
+  return localInstalls.status(local);
 });
 
 ipcMain.handle("local:network", (_event, id) => {
   const local = localInstalls.load()[id];
   if (!local) throw new Error("This installation was not installed by this app.");
-  return { ...localInstalls.network(local.service), port: local.port };
+  return { ...localInstalls.network(local), port: local.port };
 });
 
 ipcMain.handle("local:set-network", async (_event, { id, lan }) => {
-  const local = localInstalls.load()[id];
+  const known = localInstalls.load();
+  const local = known[id];
   if (!local) throw new Error("This installation was not installed by this app.");
-  return { ...(await localInstalls.setNetwork(local.service, Boolean(lan))), port: local.port };
+  const net = await localInstalls.setNetwork(local, Boolean(lan));
+  known[id] = { ...local, lan: net.lan };
+  localInstalls.save(known);
+  localInstalls.applyNetwork(known);
+  return { ...net, port: local.port };
 });
 
 ipcMain.handle("tabs:open", (_event, payload) => createTab(payload));
@@ -2312,6 +2364,10 @@ app.whenReady().then(async () => {
   extensionActions = extensions.actions(settings.extensions);
   keepExtensionWorkersAwake();
 
+  // On Windows the mvmOS Linux takes a few seconds to start; it starts now,
+  // and a tab that is faster than it waits for it (see did-fail-load).
+  localInstalls.startup(localInstalls.load());
+
   buildMenu();
   createWindow();
   syncTray();
@@ -2347,6 +2403,7 @@ app.on("before-quit", (event) => {
 app.on("will-quit", () => {
   if (tray && !tray.isDestroyed()) tray.destroy();
   tray = null;
+  localInstalls.shutdown();
 });
 
 app.on("window-all-closed", () => {

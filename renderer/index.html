@@ -77,7 +77,7 @@
     <div id="installation-modal" class="modal hidden">
       <div class="modal-card">
         <h2 id="installation-modal-title">Add installation</h2>
-        <!-- Only when adding an mvmOS installation on Linux; see local-installs.js. -->
+        <!-- Only when adding an mvmOS installation on Linux or Windows; see local-installs.js. -->
         <div id="modal-mode" class="mode-switch hidden">
           <button type="button" id="mode-connect-btn" class="mode-btn active">Connect to a server</button>
           <button type="button" id="mode-local-btn" class="mode-btn">Install on this computer</button>
@@ -93,17 +93,31 @@
           </label>
           <p class="form-hint" id="modal-type-hint"></p>
           <div id="modal-local" class="local-install hidden">
-            <p class="form-hint">
-              mvmOS is installed on this computer in its own folder, as its own
-              service and on its own port, and opens right here. Like on a
-              server, it can use everything on this computer. Sign in with your
-              Linux user name and password.
-            </p>
-            <p class="form-hint">
-              It needs Python 3.10 or newer and an internet connection. Your
-              computer asks for your password once.
-            </p>
+            <!-- The texts depend on the platform; see setInstallMode(). -->
+            <p class="form-hint" id="local-about"></p>
+            <p class="form-hint" id="local-needs"></p>
+            <p class="form-hint hidden" id="local-signin"></p>
             <p class="form-error hidden" id="local-problems"></p>
+            <p class="local-notes hidden" id="local-notes"></p>
+            <!-- Only for a new Linux on Windows, which has nobody to sign in with yet. -->
+            <div id="local-user" class="local-user hidden">
+              <p class="form-hint">
+                mvmOS signs in with Linux users. Choose the first user of the
+                mvmOS Linux; it is also its administrator.
+              </p>
+              <label>
+                Linux user name
+                <input id="local-user-name" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. maria" />
+              </label>
+              <label>
+                Password
+                <input id="local-password" type="password" autocomplete="new-password" />
+              </label>
+              <label>
+                Repeat password
+                <input id="local-password2" type="password" autocomplete="new-password" />
+              </label>
+            </div>
             <div class="local-terms">
               mvmOS is open-source software provided "as-is" without any
               warranty, express or implied. The authors are not liable for any
@@ -119,11 +133,7 @@
               <input type="checkbox" id="local-lan" />
               <span>Let phones and other devices on my network open it</span>
             </label>
-            <p class="form-hint">
-              Without this, only this computer can open it. With it, anyone on
-              the same network, such as a café Wi-Fi, can see its sign-in page.
-              You can change this later.
-            </p>
+            <p class="form-hint" id="local-lan-note"></p>
             <pre id="local-log" class="local-log hidden"></pre>
           </div>
           <!-- Editing an installation that lives on this computer. -->
